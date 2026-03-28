@@ -1,0 +1,54 @@
+name = "weaveledger-api"
+main = "src/index.ts"
+compatibility_date = "2025-01-01"
+
+# Uncomment and set your custom domain after deployment:
+# routes = [
+#   { pattern = "ledger.yourdomain.com", custom_domain = true }
+# ]
+
+# D1 Database — create with: npx wrangler d1 create weaveledger-db
+[[d1_databases]]
+binding = "DB"
+database_name = "weaveledger-db"
+database_id = "" # Set after running: npx wrangler d1 create weaveledger-db
+
+# R2 Bucket — create with: npx wrangler r2 bucket create weaveledger-receipts
+[[r2_buckets]]
+binding = "RECEIPTS_BUCKET"
+bucket_name = "weaveledger-receipts"
+
+# Workflows
+[[workflows]]
+name = "receipt-processor"
+binding = "RECEIPT_WORKFLOW"
+class_name = "ReceiptProcessorWorkflow"
+
+# Inbound email routing (optional)
+# Configure in Cloudflare Dashboard > your domain > Email > Email Routing
+# to route receipts@yourdomain.com > this Worker
+# [[email_routing]]
+# enabled = true
+
+# Outbound email (optional)
+# [[send_email]]
+# name = "SEND_EMAIL"
+
+# Environment variables (set via wrangler secret put)
+# Required:
+#   npx wrangler secret put JWT_SECRET
+#
+# For AI receipt scanning (at least one required):
+#   npx wrangler secret put CLAUDE_API_KEY
+#   npx wrangler secret put OPENAI_API_KEY
+#
+# For Google Play webhooks (optional):
+#   npx wrangler secret put GOOGLE_PLAY_WEBHOOK_SECRET
+
+# Cron trigger: sync all active integrations daily at 6 AM UTC
+[triggers]
+crons = ["0 6 * * *"]
+
+# Upload size limit for receipt images (10 MB)
+[limits]
+cpu_ms = 30000
