@@ -2,7 +2,7 @@
 
 Smart expense tracking for freelancers and small business owners. Self-hosted on Cloudflare Workers — you own your data.
 
-[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/WeaveHubHQ/weaveledger)
+[![Deploy to Cloudflare](https://static.weavehub.app/weaveledger/deploy-button.svg)](https://deploy.workers.cloudflare.com/?url=https://github.com/WeaveHubHQ/weaveledger-oss)
 
 <a href="https://www.buymeacoffee.com/jasonlazerus"><img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" height="50" width="217" alt="Buy Me A Coffee"></a>
 
