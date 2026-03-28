@@ -34,6 +34,12 @@ class_name = "ReceiptProcessorWorkflow"
 # [[send_email]]
 # name = "SEND_EMAIL"
 
+# Subscription enforcement — the iOS app requires a Pro subscription for full features.
+# The licensing worker validates subscriptions centrally.
+[vars]
+SUBSCRIPTION_ENFORCEMENT = "licensing"
+LICENSING_URL = "https://licensing.weavehub.app"
+
 # Environment variables (set via wrangler secret put)
 # Required:
 #   npx wrangler secret put JWT_SECRET
