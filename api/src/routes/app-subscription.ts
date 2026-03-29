@@ -47,14 +47,10 @@ export async function verifyAppSubscription(request: Request, env: Env, userId: 
 
   let txnInfo: Record<string, unknown>;
   try {
-    const inputPreview = body.signedTransactionInfo.substring(0, 200);
-    console.log(`[verify] Input preview (${body.signedTransactionInfo.length} chars): ${inputPreview}`);
     const result = await verifyOrDecodeTransaction(body.signedTransactionInfo);
     txnInfo = result.txnInfo;
-    console.log(`[verify] Decoded fields: ${Object.keys(txnInfo).join(', ')}`);
   } catch (e) {
     console.error('Failed to verify signed transaction:', e);
-    console.error(`[verify] Input was ${body.signedTransactionInfo.length} chars, starts with: ${body.signedTransactionInfo.substring(0, 100)}`);
     return error('Invalid signed transaction');
   }
 
