@@ -14,8 +14,7 @@ CREATE TABLE IF NOT EXISTS app_subscriptions (
   canceled_at               TEXT,
   revocation_date           TEXT,
   revocation_reason         INTEGER,
-  environment               TEXT NOT NULL DEFAULT 'Production'
-                              CHECK (environment IN ('Sandbox', 'Production')),
+  environment               TEXT NOT NULL DEFAULT 'Production',
   last_notification_type    TEXT,
   last_notification_subtype TEXT,
   created_at                TEXT NOT NULL DEFAULT (datetime('now')),

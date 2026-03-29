@@ -39,6 +39,7 @@ class_name = "ReceiptProcessorWorkflow"
 [vars]
 SUBSCRIPTION_ENFORCEMENT = "licensing"
 LICENSING_URL = "https://licensing.weavehub.app"
+# APPLE_BUNDLE_ID = "com.yourcompany.yourapp"  # Optional: restrict Apple IAP verification to a specific bundle ID
 
 # Environment variables (set via wrangler secret put)
 # Required:

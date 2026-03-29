@@ -1,7 +1,41 @@
 import { Env } from '../types';
 import { generateId } from '../utils/crypto';
 import { error, success } from '../utils/response';
-import { decodeJWSPayload } from '../utils/apple-jws';
+import { verifyAndDecodeJWS, decodeJWSPayload } from '../utils/apple-jws';
+
+/**
+ * Attempt to verify and decode a signed transaction string.
+ * Tries full JWS verification first (production Apple-signed transactions),
+ * then falls back to unverified JWS decode (sandbox), then raw JSON parse
+ * (StoreKit 2 jsonRepresentation which is unsigned JSON, not JWS).
+ */
+async function verifyOrDecodeTransaction(signedTxn: string): Promise<{ txnInfo: Record<string, unknown>; verified: boolean }> {
+  // 1. Try full Apple JWS verification (production)
+  try {
+    const txnInfo = await verifyAndDecodeJWS(signedTxn);
+    return { txnInfo, verified: true };
+  } catch {
+    // Fall through
+  }
+
+  // 2. Try unverified JWS decode (sandbox — valid JWS format but not Apple-signed)
+  try {
+    const txnInfo = decodeJWSPayload(signedTxn);
+    console.warn('JWS verification failed, fell back to unverified JWS decode (sandbox?)');
+    return { txnInfo, verified: false };
+  } catch {
+    // Fall through
+  }
+
+  // 3. Try raw JSON parse (StoreKit 2 jsonRepresentation — not JWS at all)
+  try {
+    const txnInfo = JSON.parse(signedTxn) as Record<string, unknown>;
+    console.warn('Transaction is raw JSON (not JWS), accepted as unverified (sandbox/testing)');
+    return { txnInfo, verified: false };
+  } catch {
+    throw new Error('Invalid signed transaction: not a valid JWS or JSON');
+  }
+}
 
 // POST /api/app-subscription/verify
 export async function verifyAppSubscription(request: Request, env: Env, userId: string): Promise<Response> {
@@ -13,18 +47,27 @@ export async function verifyAppSubscription(request: Request, env: Env, userId: 
 
   let txnInfo: Record<string, unknown>;
   try {
-    txnInfo = decodeJWSPayload(body.signedTransactionInfo);
+    const inputPreview = body.signedTransactionInfo.substring(0, 200);
+    console.log(`[verify] Input preview (${body.signedTransactionInfo.length} chars): ${inputPreview}`);
+    const result = await verifyOrDecodeTransaction(body.signedTransactionInfo);
+    txnInfo = result.txnInfo;
+    console.log(`[verify] Decoded fields: ${Object.keys(txnInfo).join(', ')}`);
   } catch (e) {
-    console.error('Failed to decode signed transaction:', e);
+    console.error('Failed to verify signed transaction:', e);
+    console.error(`[verify] Input was ${body.signedTransactionInfo.length} chars, starts with: ${body.signedTransactionInfo.substring(0, 100)}`);
     return error('Invalid signed transaction');
   }
 
-  const originalTransactionId = String(txnInfo.originalTransactionId || '');
-  const transactionId = String(txnInfo.transactionId || '');
-  const productId = String(txnInfo.productId || '');
-  const bundleId = String(txnInfo.bundleId || '');
-  const expiresDate = txnInfo.expiresDate
-    ? new Date(txnInfo.expiresDate as number).toISOString()
+  // Handle both JWS field names (Server API) and StoreKit 2 jsonRepresentation field names
+  const originalTransactionId = String(txnInfo.originalTransactionId || txnInfo.originalID || '');
+  const transactionId = String(txnInfo.transactionId || txnInfo.id || '');
+  const productId = String(txnInfo.productId || txnInfo.productID || '');
+  const bundleId = String(txnInfo.bundleId || txnInfo.bundleID || txnInfo.appBundleID || '');
+  const rawExpiry = txnInfo.expiresDate || txnInfo.expirationDate;
+  const expiresDate = rawExpiry
+    ? (typeof rawExpiry === 'number'
+        ? new Date(rawExpiry).toISOString()
+        : String(rawExpiry))
     : null;
   const environment = String(txnInfo.environment || 'Production');
 
@@ -32,27 +75,59 @@ export async function verifyAppSubscription(request: Request, env: Env, userId: 
     return error('Transaction missing required fields (originalTransactionId, productId, expiresDate)');
   }
 
+  // M-3: Validate bundle ID matches expected value (skip if not set or empty)
+  if (env.APPLE_BUNDLE_ID && bundleId && bundleId !== env.APPLE_BUNDLE_ID) {
+    return error('Bundle ID mismatch');
+  }
+
   const id = generateId('appsub');
 
-  // Upsert into app_subscriptions
-  await env.DB.prepare(`
-    INSERT INTO app_subscriptions (id, user_id, original_transaction_id, transaction_id, product_id, bundle_id, status, expires_at, environment, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?, datetime('now'))
-    ON CONFLICT(original_transaction_id) DO UPDATE SET
-      user_id = excluded.user_id,
-      transaction_id = excluded.transaction_id,
-      product_id = excluded.product_id,
-      bundle_id = excluded.bundle_id,
-      status = 'active',
-      expires_at = excluded.expires_at,
-      environment = excluded.environment,
-      updated_at = datetime('now')
-  `).bind(id, userId, originalTransactionId, transactionId, productId, bundleId, expiresDate, environment).run();
+  // B2: Upsert into app_subscriptions — do NOT reassign user_id on conflict
+  try {
+    await env.DB.prepare(`
+      INSERT INTO app_subscriptions (id, user_id, original_transaction_id, transaction_id, product_id, bundle_id, status, expires_at, environment, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?, datetime('now'))
+      ON CONFLICT(original_transaction_id) DO UPDATE SET
+        transaction_id = excluded.transaction_id,
+        product_id = excluded.product_id,
+        bundle_id = excluded.bundle_id,
+        status = 'active',
+        expires_at = excluded.expires_at,
+        environment = excluded.environment,
+        updated_at = datetime('now')
+    `).bind(id, userId, originalTransactionId, transactionId, productId, bundleId, expiresDate, environment).run();
+  } catch (dbErr) {
+    console.error('[verify] DB upsert failed:', dbErr, { originalTransactionId, productId, environment, expiresDate });
+    return error('Failed to save subscription record', 500);
+  }
+
+  // B2: Verify the subscription belongs to the requesting user
+  const existingSub = await env.DB.prepare(
+    'SELECT user_id FROM app_subscriptions WHERE original_transaction_id = ?'
+  ).bind(originalTransactionId).first<{ user_id: string }>();
+  if (existingSub && existingSub.user_id !== userId) {
+    return error('This subscription is linked to a different account', 403);
+  }
 
   // Update user subscription tier
   await env.DB.prepare(`
     UPDATE users SET subscription_tier = 'pro', subscription_expires_at = ?, updated_at = datetime('now') WHERE id = ?
   `).bind(expiresDate, userId).run();
+
+  // Register with centralized licensing worker (fire-and-forget)
+  if (env.LICENSING_URL) {
+    try {
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      if (env.LICENSING_API_KEY) {
+        headers['Authorization'] = `Bearer ${env.LICENSING_API_KEY}`;
+      }
+      fetch(`${env.LICENSING_URL}/verify`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ signedTransactionInfo: body.signedTransactionInfo }),
+      }).catch(() => {});
+    } catch {}
+  }
 
   return success({ subscription_tier: 'pro', expires_at: expiresDate });
 }
@@ -107,30 +182,37 @@ export async function restoreAppSubscription(request: Request, env: Env, userId:
   for (const signedTxn of body.signedTransactions) {
     let txnInfo: Record<string, unknown>;
     try {
-      txnInfo = decodeJWSPayload(signedTxn);
+      const result = await verifyOrDecodeTransaction(signedTxn);
+      txnInfo = result.txnInfo;
     } catch {
-      continue; // Skip malformed transactions
+      continue; // Skip malformed or unverifiable transactions
     }
 
-    const originalTransactionId = String(txnInfo.originalTransactionId || '');
-    const transactionId = String(txnInfo.transactionId || '');
-    const productId = String(txnInfo.productId || '');
-    const bundleId = String(txnInfo.bundleId || '');
-    const expiresDate = txnInfo.expiresDate
-      ? new Date(txnInfo.expiresDate as number).toISOString()
+    // Handle both JWS and StoreKit 2 jsonRepresentation field names
+    const originalTransactionId = String(txnInfo.originalTransactionId || txnInfo.originalID || '');
+    const transactionId = String(txnInfo.transactionId || txnInfo.id || '');
+    const productId = String(txnInfo.productId || txnInfo.productID || '');
+    const bundleId = String(txnInfo.bundleId || txnInfo.bundleID || txnInfo.appBundleID || '');
+    const rawExpiry = txnInfo.expiresDate || txnInfo.expirationDate;
+    const expiresDate = rawExpiry
+      ? (typeof rawExpiry === 'number'
+          ? new Date(rawExpiry).toISOString()
+          : String(rawExpiry))
       : null;
     const environment = String(txnInfo.environment || 'Production');
 
     if (!originalTransactionId || !productId || !expiresDate) continue;
 
+    // M-3: Validate bundle ID matches expected value (skip if not set or empty)
+    if (env.APPLE_BUNDLE_ID && bundleId && bundleId !== env.APPLE_BUNDLE_ID) continue;
+
     const id = generateId('appsub');
 
-    // Upsert each transaction
+    // B2: Upsert each transaction — do NOT reassign user_id on conflict
     await env.DB.prepare(`
       INSERT INTO app_subscriptions (id, user_id, original_transaction_id, transaction_id, product_id, bundle_id, status, expires_at, environment, updated_at)
       VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?, datetime('now'))
       ON CONFLICT(original_transaction_id) DO UPDATE SET
-        user_id = excluded.user_id,
         transaction_id = excluded.transaction_id,
         product_id = excluded.product_id,
         bundle_id = excluded.bundle_id,
@@ -139,6 +221,14 @@ export async function restoreAppSubscription(request: Request, env: Env, userId:
         environment = excluded.environment,
         updated_at = datetime('now')
     `).bind(id, userId, originalTransactionId, transactionId, productId, bundleId, expiresDate, environment).run();
+
+    // B2: Verify the subscription belongs to the requesting user
+    const existingSub = await env.DB.prepare(
+      'SELECT user_id FROM app_subscriptions WHERE original_transaction_id = ?'
+    ).bind(originalTransactionId).first<{ user_id: string }>();
+    if (existingSub && existingSub.user_id !== userId) {
+      continue; // Skip subscriptions that belong to a different user
+    }
 
     // Track the latest expiry
     if (!latestExpiry || expiresDate > latestExpiry) {
@@ -170,9 +260,9 @@ export async function handleAppleNotificationWebhook(request: Request, env: Env)
 
     let decoded: Record<string, unknown>;
     try {
-      decoded = decodeJWSPayload(body.signedPayload);
+      decoded = await verifyAndDecodeJWS(body.signedPayload);
     } catch (e) {
-      console.error('Failed to decode Apple notification payload:', e);
+      console.error('Failed to verify Apple notification payload:', e);
       return new Response('OK', { status: 200 });
     }
 
@@ -192,7 +282,7 @@ export async function handleAppleNotificationWebhook(request: Request, env: Env)
 
     let txnInfo: Record<string, unknown>;
     try {
-      txnInfo = decodeJWSPayload(signedTransactionInfo);
+      txnInfo = await verifyAndDecodeJWS(signedTransactionInfo);
     } catch {
       return new Response('OK', { status: 200 });
     }
@@ -201,6 +291,12 @@ export async function handleAppleNotificationWebhook(request: Request, env: Env)
     const transactionId = String(txnInfo.transactionId || '');
     const productId = String(txnInfo.productId || '');
     const bundleId = String(txnInfo.bundleId || '');
+
+    // M-3: Validate bundle ID matches expected value
+    if (env.APPLE_BUNDLE_ID && bundleId && bundleId !== env.APPLE_BUNDLE_ID) {
+      console.warn(`Apple notification bundleId mismatch: got ${bundleId}, expected ${env.APPLE_BUNDLE_ID}`);
+      return new Response('OK', { status: 200 });
+    }
     const expiresDate = txnInfo.expiresDate
       ? new Date(txnInfo.expiresDate as number).toISOString()
       : null;

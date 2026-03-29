@@ -152,14 +152,9 @@ export async function addGooglePlaySubscription(request: Request, env: Env, user
 
 // Google Play Pub/Sub webhook handler (public endpoint, no JWT auth)
 export async function handleGooglePlayWebhook(request: Request, env: Env): Promise<Response> {
-  // Verify shared secret (header preferred; query param deprecated for backward compat with Pub/Sub)
+  // Verify shared secret (header or query param — Pub/Sub requires query param)
   const url = new URL(request.url);
-  const headerSecret = request.headers.get('X-Webhook-Secret');
-  const querySecret = url.searchParams.get('secret');
-  if (querySecret && !headerSecret) {
-    console.warn('Webhook secret via query param is deprecated. Migrate to X-Webhook-Secret header.');
-  }
-  const secret = headerSecret || querySecret;
+  const secret = request.headers.get('X-Webhook-Secret') || url.searchParams.get('secret');
 
   if (!secret || !env.GOOGLE_PLAY_WEBHOOK_SECRET) {
     return new Response('Unauthorized', { status: 401 });

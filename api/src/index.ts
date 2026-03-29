@@ -87,7 +87,7 @@ export default {
         return addCors(await refreshAuth(request, env));
       }
       if (path === '/api/health') {
-        return addCors(json({ status: 'ok', version: '1.2.0' }));
+        return addCors(json({ status: 'ok', version: '1.3.0' }));
       }
 
       // Apple App Site Association (password manager + universal links)
@@ -184,11 +184,11 @@ export default {
         return addCors(await restoreAppSubscription(request, env, userId));
       }
 
-      // Subscription enforcement helper for paid endpoints
-      const paid = async (handler: Promise<Response>): Promise<Response> => {
-        const check = await requireSubscription(env.DB, userId, env.SUBSCRIPTION_ENFORCEMENT);
+      // S1: Subscription enforcement helper — uses a thunk to avoid eagerly executing the handler
+      const paid = async (handler: () => Promise<Response>): Promise<Response> => {
+        const check = await requireSubscription(env.DB, userId, env.SUBSCRIPTION_ENFORCEMENT, env.LICENSING_URL);
         if (check) return addCors(check);
-        return addCors(await handler);
+        return addCors(await handler());
       };
 
       // Book routes
@@ -196,7 +196,7 @@ export default {
         return addCors(await listBooks(request, env, userId));
       }
       if (path === '/api/books' && method === 'POST') {
-        return paid(createBook(request, env, userId));
+        return paid(() => createBook(request, env, userId));
       }
 
       // Book-specific routes
@@ -204,19 +204,19 @@ export default {
       if (bookMatch) {
         const bookId = bookMatch[1];
         if (method === 'GET') return addCors(await getBook(request, env, userId, bookId));
-        if (method === 'PUT' || method === 'PATCH') return paid(updateBook(request, env, userId, bookId));
-        if (method === 'DELETE') return paid(deleteBook(request, env, userId, bookId));
+        if (method === 'PUT' || method === 'PATCH') return paid(() => updateBook(request, env, userId, bookId));
+        if (method === 'DELETE') return paid(() => deleteBook(request, env, userId, bookId));
       }
 
       // Book sharing
       const shareMatch = path.match(/^\/api\/books\/([^/]+)\/shares$/);
       if (shareMatch && method === 'POST') {
-        return paid(shareBook(request, env, userId, shareMatch[1]));
+        return paid(() => shareBook(request, env, userId, shareMatch[1]));
       }
 
       const revokeMatch = path.match(/^\/api\/books\/([^/]+)\/shares\/([^/]+)$/);
       if (revokeMatch && method === 'DELETE') {
-        return paid(revokeShare(request, env, userId, revokeMatch[1], revokeMatch[2]));
+        return paid(() => revokeShare(request, env, userId, revokeMatch[1], revokeMatch[2]));
       }
 
       // Invitation routes
@@ -241,13 +241,13 @@ export default {
       if (receiptsMatch) {
         const bookId = receiptsMatch[1];
         if (method === 'GET') return addCors(await listReceipts(request, env, userId, bookId));
-        if (method === 'POST') return paid(createReceipt(request, env, userId, bookId));
+        if (method === 'POST') return paid(() => createReceipt(request, env, userId, bookId));
       }
 
       // Receipt image upload
       const uploadMatch = path.match(/^\/api\/books\/([^/]+)\/receipts\/upload$/);
       if (uploadMatch && method === 'POST') {
-        return paid(uploadReceiptImage(request, env, userId, uploadMatch[1]));
+        return paid(() => uploadReceiptImage(request, env, userId, uploadMatch[1]));
       }
 
       // Single receipt routes
@@ -255,14 +255,14 @@ export default {
       if (receiptMatch) {
         const [, bookId, receiptId] = receiptMatch;
         if (method === 'GET') return addCors(await getReceipt(request, env, userId, bookId, receiptId));
-        if (method === 'PUT' || method === 'PATCH') return paid(updateReceipt(request, env, userId, bookId, receiptId));
-        if (method === 'DELETE') return paid(deleteReceipt(request, env, userId, bookId, receiptId));
+        if (method === 'PUT' || method === 'PATCH') return paid(() => updateReceipt(request, env, userId, bookId, receiptId));
+        if (method === 'DELETE') return paid(() => deleteReceipt(request, env, userId, bookId, receiptId));
       }
 
       // Receipt retry
       const retryMatch = path.match(/^\/api\/books\/([^/]+)\/receipts\/([^/]+)\/retry$/);
       if (retryMatch && method === 'POST') {
-        return paid(retryReceipt(request, env, userId, retryMatch[1], retryMatch[2]));
+        return paid(() => retryReceipt(request, env, userId, retryMatch[1], retryMatch[2]));
       }
 
       // Receipt image
@@ -280,7 +280,7 @@ export default {
       // Generate short-lived download token for exports
       const dlTokenMatch = path.match(/^\/api\/books\/([^/]+)\/export\/(csv|json|pdf|qbo|ofx)\/token$/);
       if (dlTokenMatch && method === 'POST') {
-        const subCheck = await requireSubscription(env.DB, userId, env.SUBSCRIPTION_ENFORCEMENT);
+        const subCheck = await requireSubscription(env.DB, userId, env.SUBSCRIPTION_ENFORCEMENT, env.LICENSING_URL);
         if (subCheck) return addCors(subCheck);
         const [, dlBookId, dlFormat] = dlTokenMatch;
         // Verify the user has access to this book before generating a token (M-3)
@@ -300,111 +300,111 @@ export default {
       // Export routes (authenticated via header)
       const exportMatch = path.match(/^\/api\/books\/([^/]+)\/export\/(csv|json|pdf|qbo|ofx)$/);
       if (exportMatch && method === 'GET') {
-        return paid(exportBook(request, env, userId, exportMatch[1], exportMatch[2] as ExportFormat));
+        return paid(() => exportBook(request, env, userId, exportMatch[1], exportMatch[2] as ExportFormat));
       }
 
       // Income integrations (paid)
 
       if (path === '/api/integrations' && method === 'GET') {
-        return paid(listIntegrations(request, env, userId));
+        return paid(() => listIntegrations(request, env, userId));
       }
       if (path === '/api/integrations' && method === 'POST') {
-        return paid(upsertIntegration(request, env, userId));
+        return paid(() => upsertIntegration(request, env, userId));
       }
       const integrationMatch = path.match(/^\/api\/integrations\/([^/]+)$/);
       if (integrationMatch && method === 'DELETE') {
-        return paid(deleteIntegration(request, env, userId, integrationMatch[1]));
+        return paid(() => deleteIntegration(request, env, userId, integrationMatch[1]));
       }
       const syncMatch = path.match(/^\/api\/integrations\/([^/]+)\/sync$/);
       if (syncMatch && method === 'POST') {
-        return paid(syncIntegration(request, env, userId, syncMatch[1]));
+        return paid(() => syncIntegration(request, env, userId, syncMatch[1]));
       }
 
       // Income transactions (paid)
       if (path === '/api/income' && method === 'GET') {
-        return paid(listIncomeTransactions(request, env, userId));
+        return paid(() => listIncomeTransactions(request, env, userId));
       }
       if (path === '/api/income/summary' && method === 'GET') {
-        return paid(getIncomeSummary(request, env, userId));
+        return paid(() => getIncomeSummary(request, env, userId));
       }
 
       // Subscriptions (paid)
       if (path === '/api/subscriptions' && method === 'GET') {
-        return paid(listSubscriptions(request, env, userId));
+        return paid(() => listSubscriptions(request, env, userId));
       }
       if (path === '/api/subscriptions/summary' && method === 'GET') {
-        return paid(getSubscriptionSummary(request, env, userId));
+        return paid(() => getSubscriptionSummary(request, env, userId));
       }
       if (path === '/api/subscriptions/forecast' && method === 'GET') {
-        return paid(getSubscriptionForecast(request, env, userId));
+        return paid(() => getSubscriptionForecast(request, env, userId));
       }
       const syncSubsMatch = path.match(/^\/api\/integrations\/([^/]+)\/sync-subscriptions$/);
       if (syncSubsMatch && method === 'POST') {
-        return paid(syncSubscriptions(request, env, userId, syncSubsMatch[1]));
+        return paid(() => syncSubscriptions(request, env, userId, syncSubsMatch[1]));
       }
 
       // Budget status (must be before single budget route so "status" isn't treated as an ID)
       const budgetStatusMatch = path.match(/^\/api\/books\/([^/]+)\/budgets\/status$/);
       if (budgetStatusMatch && method === 'GET') {
-        return paid(getBudgetStatus(request, env, userId, budgetStatusMatch[1]));
+        return paid(() => getBudgetStatus(request, env, userId, budgetStatusMatch[1]));
       }
 
       // Budget routes (paid)
       const budgetsMatch = path.match(/^\/api\/books\/([^/]+)\/budgets$/);
       if (budgetsMatch) {
         const bookId = budgetsMatch[1];
-        if (method === 'GET') return paid(listBudgets(request, env, userId, bookId));
-        if (method === 'POST') return paid(createBudget(request, env, userId, bookId));
+        if (method === 'GET') return paid(() => listBudgets(request, env, userId, bookId));
+        if (method === 'POST') return paid(() => createBudget(request, env, userId, bookId));
       }
 
       const budgetMatch = path.match(/^\/api\/books\/([^/]+)\/budgets\/([^/]+)$/);
       if (budgetMatch) {
         const [, bookId, budgetId] = budgetMatch;
-        if (method === 'PUT' || method === 'PATCH') return paid(updateBudget(request, env, userId, bookId, budgetId));
-        if (method === 'DELETE') return paid(deleteBudget(request, env, userId, bookId, budgetId));
+        if (method === 'PUT' || method === 'PATCH') return paid(() => updateBudget(request, env, userId, bookId, budgetId));
+        if (method === 'DELETE') return paid(() => deleteBudget(request, env, userId, bookId, budgetId));
       }
 
       // Recurring expense routes (paid)
       const recurringExpensesMatch = path.match(/^\/api\/books\/([^/]+)\/recurring-expenses$/);
       if (recurringExpensesMatch) {
         const bookId = recurringExpensesMatch[1];
-        if (method === 'GET') return paid(listRecurringExpenses(request, env, userId, bookId));
-        if (method === 'POST') return paid(createRecurringExpense(request, env, userId, bookId));
+        if (method === 'GET') return paid(() => listRecurringExpenses(request, env, userId, bookId));
+        if (method === 'POST') return paid(() => createRecurringExpense(request, env, userId, bookId));
       }
 
       const recurringExpenseMatch = path.match(/^\/api\/books\/([^/]+)\/recurring-expenses\/([^/]+)$/);
       if (recurringExpenseMatch) {
         const [, bookId, expenseId] = recurringExpenseMatch;
-        if (method === 'PUT' || method === 'PATCH') return paid(updateRecurringExpense(request, env, userId, bookId, expenseId));
-        if (method === 'DELETE') return paid(deleteRecurringExpense(request, env, userId, bookId, expenseId));
+        if (method === 'PUT' || method === 'PATCH') return paid(() => updateRecurringExpense(request, env, userId, bookId, expenseId));
+        if (method === 'DELETE') return paid(() => deleteRecurringExpense(request, env, userId, bookId, expenseId));
       }
 
       // Tax routes (paid, user-scoped)
       if (path === '/api/tax-categories' && method === 'GET') {
-        return paid(getTaxCategories(request, env, userId));
+        return paid(() => getTaxCategories(request, env, userId));
       }
       if (path === '/api/tax-settings' && method === 'GET') {
-        return paid(getTaxSettings(request, env, userId));
+        return paid(() => getTaxSettings(request, env, userId));
       }
       if (path === '/api/tax-settings' && method === 'PUT') {
-        return paid(updateTaxSettings(request, env, userId));
+        return paid(() => updateTaxSettings(request, env, userId));
       }
 
       // Tax routes (paid, book-scoped)
       const taxSummaryMatch = path.match(/^\/api\/books\/([^/]+)\/tax-summary$/);
       if (taxSummaryMatch && method === 'GET') {
-        return paid(getTaxSummary(request, env, userId, taxSummaryMatch[1]));
+        return paid(() => getTaxSummary(request, env, userId, taxSummaryMatch[1]));
       }
 
       const taxEstimatesMatch = path.match(/^\/api\/books\/([^/]+)\/tax-estimates$/);
       if (taxEstimatesMatch && method === 'GET') {
-        return paid(getTaxEstimates(request, env, userId, taxEstimatesMatch[1]));
+        return paid(() => getTaxEstimates(request, env, userId, taxEstimatesMatch[1]));
       }
 
       // P&L report (paid)
       const pnlMatch = path.match(/^\/api\/books\/([^/]+)\/pnl$/);
       if (pnlMatch && method === 'GET') {
-        return paid(getProfitAndLoss(request, env, userId, pnlMatch[1]));
+        return paid(() => getProfitAndLoss(request, env, userId, pnlMatch[1]));
       }
 
       return addCors(error('Not found', 404));

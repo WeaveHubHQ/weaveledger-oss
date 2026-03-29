@@ -7,8 +7,10 @@ export interface Env {
   RECEIPT_WORKFLOW: Workflow;
   GOOGLE_PLAY_WEBHOOK_SECRET: string;
   SEND_EMAIL: { send: (message: EmailMessage) => Promise<void> };
-  SUBSCRIPTION_ENFORCEMENT?: string;  // "apple" | "none" (default: treat as "none")
+  SUBSCRIPTION_ENFORCEMENT?: string;  // "licensing" | "apple" | "none" (default: treat as "none")
   APPLE_BUNDLE_ID?: string;           // "app.weavehub.WeaveLedger"
+  LICENSING_URL?: string;             // "https://licensing.weavehub.app" (for SUBSCRIPTION_ENFORCEMENT=licensing)
+  LICENSING_API_KEY?: string;         // Shared secret for authenticating with the licensing worker
 }
 
 export interface EmailMessage {

@@ -58,25 +58,31 @@ function parseInterval(duration: string): { interval: string; count: number } {
 
 // Compute period end from a subscription start date + interval
 function computePeriodEnd(startDate: string, interval: string, count: number): string {
+  // S8: Guard against zero/negative count causing infinite loop
+  if (count <= 0) count = 1;
   const d = new Date(startDate);
   if (interval === 'year') d.setFullYear(d.getFullYear() + count);
   else if (interval === 'month') d.setMonth(d.getMonth() + count);
   else if (interval === 'week') d.setDate(d.getDate() + 7 * count);
   else d.setDate(d.getDate() + count);
 
-  // Walk forward until the period end is in the future
+  // Walk forward until the period end is in the future (max 1000 iterations)
   const now = new Date();
-  while (d <= now) {
+  let iterations = 0;
+  while (d <= now && iterations < 1000) {
     if (interval === 'year') d.setFullYear(d.getFullYear() + count);
     else if (interval === 'month') d.setMonth(d.getMonth() + count);
     else if (interval === 'week') d.setDate(d.getDate() + 7 * count);
     else d.setDate(d.getDate() + count);
+    iterations++;
   }
 
   return d.toISOString().split('T')[0];
 }
 
 function computePeriodStart(periodEnd: string, interval: string, count: number): string {
+  // S8: Guard against zero/negative count
+  if (count <= 0) count = 1;
   const d = new Date(periodEnd);
   if (interval === 'year') d.setFullYear(d.getFullYear() - count);
   else if (interval === 'month') d.setMonth(d.getMonth() - count);

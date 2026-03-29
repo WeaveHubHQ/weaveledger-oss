@@ -79,21 +79,22 @@ export async function checkRateLimit(request: Request, db: D1Database, limit: nu
   const key = `ip:${ip}`;
 
   try {
-    // Record this request
-    await db.prepare('INSERT INTO rate_limits (key, timestamp) VALUES (?, ?)').bind(key, now).run();
-
-    // Count requests in the current window
+    // B3: Check count FIRST, then insert only if under the limit.
+    // Composite index hint: CREATE INDEX idx_rate_limits_key_ts ON rate_limits(key, timestamp);
     const result = await db.prepare(
       'SELECT COUNT(*) as cnt FROM rate_limits WHERE key = ? AND timestamp > ?'
     ).bind(key, windowStart).first<{ cnt: number }>();
 
+    if (result && result.cnt >= limit) {
+      return error('Too many requests. Please try again later.', 429);
+    }
+
+    // Only record this request if under the limit
+    await db.prepare('INSERT INTO rate_limits (key, timestamp) VALUES (?, ?)').bind(key, now).run();
+
     // Periodically clean up old entries (1 in 20 chance to avoid doing it every request)
     if (Math.random() < 0.05) {
       await db.prepare('DELETE FROM rate_limits WHERE timestamp < ?').bind(windowStart - windowMs).run();
-    }
-
-    if (result && result.cnt > limit) {
-      return error('Too many requests. Please try again later.', 429);
     }
   } catch (e) {
     // If rate limiting fails (e.g. table doesn't exist yet), allow the request
@@ -105,11 +106,12 @@ export async function checkRateLimit(request: Request, db: D1Database, limit: nu
 
 // Subscription paywall enforcement
 export async function requireSubscription(
-  db: D1Database, userId: string, enforcement: string | undefined
+  db: D1Database, userId: string, enforcement: string | undefined, licensingUrl?: string
 ): Promise<Response | null> {
   // Self-hosted instances: no enforcement
   if (!enforcement || enforcement === 'none') return null;
 
+  // Check local subscription tier first (cached from verify/webhook)
   const user = await db.prepare(
     'SELECT subscription_tier, subscription_expires_at FROM users WHERE id = ?'
   ).bind(userId).first<{ subscription_tier: string; subscription_expires_at: string | null }>();
@@ -117,10 +119,34 @@ export async function requireSubscription(
   if (!user) return error('User not found', 404);
 
   if (user.subscription_tier === 'pro' && user.subscription_expires_at) {
-    // Allow 3-day grace period for billing retry
     const expiresAt = new Date(user.subscription_expires_at);
     const grace = new Date(expiresAt.getTime() + 3 * 24 * 60 * 60 * 1000);
     if (grace > new Date()) return null;
+  }
+
+  // If using centralized licensing, check with the licensing worker as fallback
+  if (enforcement === 'licensing' && licensingUrl) {
+    try {
+      const appSub = await db.prepare(
+        "SELECT original_transaction_id FROM app_subscriptions WHERE user_id = ? ORDER BY updated_at DESC LIMIT 1"
+      ).bind(userId).first<{ original_transaction_id: string }>();
+
+      if (appSub) {
+        const res = await fetch(`${licensingUrl}/check/${appSub.original_transaction_id}`);
+        if (res.ok) {
+          const data = await res.json<{ valid: boolean; license?: { status: string; expires_at: string } }>();
+          if (data.valid && data.license) {
+            // Update local cache
+            await db.prepare(
+              "UPDATE users SET subscription_tier = 'pro', subscription_expires_at = ? WHERE id = ?"
+            ).bind(data.license.expires_at, userId).run();
+            return null;
+          }
+        }
+      }
+    } catch {
+      // Licensing worker unreachable — fall through to deny
+    }
   }
 
   return new Response(JSON.stringify({ error: 'Subscription required', code: 'SUBSCRIPTION_REQUIRED' }), {
