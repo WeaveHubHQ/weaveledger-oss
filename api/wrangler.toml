@@ -12,6 +12,7 @@ compatibility_date = "2025-01-01"
 binding = "DB"
 database_name = "weaveledger-db"
 database_id = "" # Set after running: npx wrangler d1 create weaveledger-db
+migrations_dir = "migrations"
 
 # R2 Bucket — create with: npx wrangler r2 bucket create weaveledger-receipts
 [[r2_buckets]]
@@ -37,8 +38,8 @@ class_name = "ReceiptProcessorWorkflow"
 # Subscription enforcement — the iOS app requires a Pro subscription for full features.
 # The licensing worker validates subscriptions centrally.
 [vars]
-SUBSCRIPTION_ENFORCEMENT = "licensing"
-LICENSING_URL = "https://licensing.weavehub.app"
+SUBSCRIPTION_ENFORCEMENT = "none"
+# LICENSING_URL = "https://licensing.weavehub.app"  # Only needed when SUBSCRIPTION_ENFORCEMENT = "licensing"
 # APPLE_BUNDLE_ID = "com.yourcompany.yourapp"  # Optional: restrict Apple IAP verification to a specific bundle ID
 
 # Environment variables (set via wrangler secret put)

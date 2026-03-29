@@ -1,14 +1,12 @@
 {
   "name": "weaveledger-api",
-  "version": "2.0.0",
+  "version": "2.1.4",
   "private": true,
   "scripts": {
     "dev": "wrangler dev",
-    "deploy": "wrangler deploy",
-    "db:migrate": "wrangler d1 execute weaveledger-db --file=./migrations/0001_initial.sql",
-    "db:migrate:local": "wrangler d1 execute weaveledger-db --local --file=./migrations/0001_initial.sql",
-    "db:migrate:009": "wrangler d1 execute weaveledger-db --file=./migrations/0009_subscriptions.sql",
-    "db:migrate:009:local": "wrangler d1 execute weaveledger-db --local --file=./migrations/0009_subscriptions.sql"
+    "deploy": "npx wrangler d1 migrations apply DB --remote && wrangler deploy",
+    "db:migrate": "npx wrangler d1 migrations apply DB --remote",
+    "db:migrate:local": "npx wrangler d1 migrations apply DB --local"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20240512.0",

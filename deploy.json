@@ -1,7 +1,7 @@
 {
   "name": "WeaveLedger",
   "description": "Self-hosted expense tracking and receipt management powered by Cloudflare Workers",
-  "repository": "https://github.com/WeaveHubHQ/weaveledger",
+  "repository": "https://github.com/WeaveHubHQ/weaveledger-oss",
   "workers": {
     "weaveledger-api": {
       "name": "weaveledger-api",
