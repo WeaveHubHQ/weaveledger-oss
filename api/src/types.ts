@@ -11,6 +11,8 @@ export interface Env {
   APPLE_BUNDLE_ID?: string;           // "app.weavehub.WeaveLedger"
   LICENSING_URL?: string;             // "https://licensing.weavehub.app" (for SUBSCRIPTION_ENFORCEMENT=licensing)
   LICENSING_API_KEY?: string;         // Shared secret for authenticating with the licensing worker
+  ALLOWED_ORIGIN?: string;            // Override default CORS origin (e.g. for a custom web frontend)
+  APP_URL?: string;                   // Base URL of your web frontend — used in password reset emails
 }
 
 export interface EmailMessage {

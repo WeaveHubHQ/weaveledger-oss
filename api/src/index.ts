@@ -23,14 +23,16 @@ export { ReceiptProcessorWorkflow } from './workflows/receipt-processor';
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     // Handle CORS preflight — only respond with CORS headers for the allowed origin
+    const ALLOWED_ORIGIN = env.ALLOWED_ORIGIN || 'https://ledger.weavehub.app';
+
     if (request.method === 'OPTIONS') {
       const reqOrigin = request.headers.get('Origin') || '';
-      if (reqOrigin !== 'https://ledger.weavehub.app') {
+      if (reqOrigin !== ALLOWED_ORIGIN) {
         return new Response(null, { status: 204 });
       }
       return new Response(null, {
         headers: {
-          'Access-Control-Allow-Origin': 'https://ledger.weavehub.app',
+          'Access-Control-Allow-Origin': ALLOWED_ORIGIN,
           'Access-Control-Allow-Methods': 'GET, POST, PUT, PATCH, DELETE, OPTIONS',
           'Access-Control-Allow-Headers': 'Content-Type, Authorization',
           'Access-Control-Max-Age': '86400',
@@ -45,7 +47,6 @@ export default {
 
     // Add CORS headers only for allowed origins; omit entirely for unknown origins
     const origin = request.headers.get('Origin') || '';
-    const ALLOWED_ORIGIN = 'https://ledger.weavehub.app';
     const isAllowedOrigin = origin === ALLOWED_ORIGIN;
     const addCors = (response: Response): Response => {
       if (!isAllowedOrigin) return response;
