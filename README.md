@@ -37,21 +37,11 @@ This opens a browser window where you authorize Wrangler to manage your Cloudfla
 
 ---
 
-## Unlock All Features (Self-Hosters)
+## Self-Hosted Feature Access
 
-> **This is the most important step for self-hosted deployments.**
+`wrangler.toml` ships with `SUBSCRIPTION_ENFORCEMENT = "none"`, which means all features are unlocked for self-hosted deployments — no subscription required.
 
-By default, `wrangler.toml` ships with `SUBSCRIPTION_ENFORCEMENT = "licensing"`, which gates certain features behind WeaveLedger's commercial licensing server. **Self-hosters must change this to `"none"` to unlock all features.**
-
-Open `api/wrangler.toml` and change the `[vars]` section:
-
-```toml
-[vars]
-SUBSCRIPTION_ENFORCEMENT = "none"
-# LICENSING_URL = "https://licensing.weavehub.app"  # not needed when enforcement is "none"
-```
-
-If you skip this step, routes for books, receipts, budgets, tax, subscriptions, and exports will return `403 Forbidden` with a subscription-required error.
+If you ever want to integrate with WeaveLedger's commercial licensing server (e.g., to validate App Store subscriptions centrally), change this to `"licensing"` and set `LICENSING_URL`.
 
 ---
 
@@ -94,13 +84,9 @@ Then create the R2 storage bucket:
 npx wrangler r2 bucket create weaveledger-receipts
 ```
 
-### 3. Set Subscription Enforcement
+### 3. Run Database Migrations
 
-If you have not already, change `SUBSCRIPTION_ENFORCEMENT` to `"none"` in `wrangler.toml` (see [Unlock All Features](#unlock-all-features-self-hosters) above).
-
-### 4. Run Database Migrations
-
-Apply all 13 migrations to set up the database schema:
+Apply all 14 migrations to set up the database schema:
 
 ```bash
 for f in migrations/*.sql; do
@@ -110,10 +96,11 @@ done
 
 See [Database Migrations](#database-migrations) below for what each migration does.
 
-### 5. Set Secrets
+### 4. Set Secrets
 
 ```bash
-# Required: JWT signing secret (generate a random string)
+# Required: JWT signing secret (generate a random 32-byte hex string)
+# macOS/Linux: openssl rand -hex 32
 npx wrangler secret put JWT_SECRET
 
 # For AI receipt scanning (at least one):
@@ -121,7 +108,7 @@ npx wrangler secret put CLAUDE_API_KEY    # Anthropic API key
 npx wrangler secret put OPENAI_API_KEY    # OpenAI API key
 ```
 
-### 6. Deploy
+### 5. Deploy
 
 ```bash
 npx wrangler deploy
@@ -129,7 +116,7 @@ npx wrangler deploy
 
 Wrangler prints your Worker URL (e.g., `https://weaveledger-api.<your-subdomain>.workers.dev`).
 
-### 7. Verify the Deployment
+### 6. Verify the Deployment
 
 ```bash
 curl https://weaveledger-api.<your-subdomain>.workers.dev/api/health
@@ -138,7 +125,7 @@ curl https://weaveledger-api.<your-subdomain>.workers.dev/api/health
 You should see:
 
 ```json
-{"status":"ok","version":"1.2.0"}
+{"status":"ok","version":"2.1.4"}
 ```
 
 Register your first user:
@@ -169,7 +156,7 @@ The app stores your server URL locally and sends all requests to your self-hoste
 
 ## Database Migrations
 
-The `api/migrations/` directory contains 13 migrations that must be applied in order. The `for` loop in the Quick Start handles this automatically.
+The `api/migrations/` directory contains 14 migrations that must be applied in order. The `for` loop in the Quick Start handles this automatically.
 
 | File | Description |
 |------|-------------|
@@ -186,6 +173,7 @@ The `api/migrations/` directory contains 13 migrations that must be applied in o
 | `0011_budgets_tax_recurring.sql` | Budgets, tax settings, recurring expense schedules |
 | `0012_token_version.sql` | Session invalidation on password change or MFA toggle |
 | `0013_app_subscriptions.sql` | WeaveLedger app subscription tracking (Apple IAP) |
+| `0014_fix_environment_check.sql` | Broaden `app_subscriptions.environment` CHECK to allow StoreKit sandbox/Xcode values |
 
 ---
 
@@ -363,15 +351,16 @@ Forward any receipt email to `receipts@yourdomain.com`. WeaveLedger matches the 
 
 ## CORS Configuration
 
-The API ships with a hardcoded CORS origin of `https://ledger.weavehub.app`. This is the hosted web dashboard and does not affect the iOS app (native apps do not send CORS headers).
+By default the API allows requests from `https://ledger.weavehub.app` (the hosted web dashboard). This does not affect the iOS app — native apps do not send CORS headers.
 
-**If you are building a custom web frontend** for your self-hosted instance, you need to update the `ALLOWED_ORIGIN` constant in `api/src/index.ts`:
+**If you are building a custom web frontend** for your self-hosted instance, set the `ALLOWED_ORIGIN` variable in `api/wrangler.toml`:
 
-```typescript
-const ALLOWED_ORIGIN = 'https://your-custom-domain.com';
+```toml
+[vars]
+ALLOWED_ORIGIN = "https://your-frontend.example.com"
 ```
 
-Search for `ledger.weavehub.app` in `api/src/index.ts` and replace both occurrences (the preflight handler and the response wrapper). Then redeploy.
+Then redeploy with `npm run deploy`.
 
 ---
 
@@ -550,7 +539,7 @@ npx wrangler secret put OPENAI_API_KEY
 
 ### CORS errors in the browser
 
-The API only allows requests from `https://ledger.weavehub.app` by default. If you are building a web client, update the `ALLOWED_ORIGIN` in `api/src/index.ts`. See [CORS Configuration](#cors-configuration).
+The API only allows requests from `https://ledger.weavehub.app` by default. If you are building a web client, set `ALLOWED_ORIGIN` in `api/wrangler.toml`. See [CORS Configuration](#cors-configuration).
 
 ### Email forwarding does not process receipts
 

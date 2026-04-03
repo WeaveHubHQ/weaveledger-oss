@@ -3,7 +3,7 @@ import { authenticate, authenticateDownload, checkRateLimit, canAccessBook, requ
 import { deriveDownloadKey } from './utils/crypto';
 import { register, login, changePassword, getProfile, updatePreferences, getUserApiKey, mfaSetup, mfaEnable, mfaDisable, addLinkedEmail, removeLinkedEmail, listLinkedEmails, forgotPassword, resetPassword, refreshAuth } from './routes/auth';
 import { listBooks, createBook, getBook, updateBook, deleteBook, shareBook, revokeShare, listInvitations, revokeInvitation } from './routes/books';
-import { listReceipts, createReceipt, getReceipt, updateReceipt, deleteReceipt, uploadReceiptImage, getReceiptImage, getReceiptAttachment, retryReceipt, getBookSummary } from './routes/receipts';
+import { listReceipts, createReceipt, getReceipt, updateReceipt, deleteReceipt, uploadReceiptImage, getReceiptImage, getReceiptAttachment, retryReceipt, getBookSummary, cleanupStuckReceipts } from './routes/receipts';
 import { exportBook } from './services/export';
 import { listIntegrations, upsertIntegration, deleteIntegration, syncIntegration, syncAllIntegrations, listIncomeTransactions, getIncomeSummary } from './routes/income';
 import { listSubscriptions, getSubscriptionSummary, getSubscriptionForecast, syncSubscriptions, addGooglePlaySubscription, handleGooglePlayWebhook } from './routes/subscriptions';
@@ -23,14 +23,16 @@ export { ReceiptProcessorWorkflow } from './workflows/receipt-processor';
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     // Handle CORS preflight — only respond with CORS headers for the allowed origin
+    const ALLOWED_ORIGIN = env.ALLOWED_ORIGIN || 'https://ledger.weavehub.app';
+
     if (request.method === 'OPTIONS') {
       const reqOrigin = request.headers.get('Origin') || '';
-      if (reqOrigin !== 'https://ledger.weavehub.app') {
+      if (reqOrigin !== ALLOWED_ORIGIN) {
         return new Response(null, { status: 204 });
       }
       return new Response(null, {
         headers: {
-          'Access-Control-Allow-Origin': 'https://ledger.weavehub.app',
+          'Access-Control-Allow-Origin': ALLOWED_ORIGIN,
           'Access-Control-Allow-Methods': 'GET, POST, PUT, PATCH, DELETE, OPTIONS',
           'Access-Control-Allow-Headers': 'Content-Type, Authorization',
           'Access-Control-Max-Age': '86400',
@@ -45,7 +47,6 @@ export default {
 
     // Add CORS headers only for allowed origins; omit entirely for unknown origins
     const origin = request.headers.get('Origin') || '';
-    const ALLOWED_ORIGIN = 'https://ledger.weavehub.app';
     const isAllowedOrigin = origin === ALLOWED_ORIGIN;
     const addCors = (response: Response): Response => {
       if (!isAllowedOrigin) return response;
@@ -87,7 +88,7 @@ export default {
         return addCors(await refreshAuth(request, env));
       }
       if (path === '/api/health') {
-        return addCors(json({ status: 'ok', version: '1.3.0' }));
+        return addCors(json({ status: 'ok', version: '1.3.1' }));
       }
 
       // Apple App Site Association (password manager + universal links)
@@ -422,6 +423,7 @@ export default {
     ctx.waitUntil(Promise.all([
       syncAllIntegrations(env),
       advanceRecurringExpenses(env),
+      cleanupStuckReceipts(env),
     ]));
   },
 };

@@ -344,6 +344,14 @@ export async function retryReceipt(request: Request, env: Env, userId: string, b
   return success({ receipt_id: receiptId, status: 'pending' }, 'Receipt queued for reprocessing');
 }
 
+export async function cleanupStuckReceipts(env: Env): Promise<void> {
+  await env.DB.prepare(
+    `UPDATE receipts SET status = 'failed', notes = 'Processing timed out — tap retry to reprocess', updated_at = datetime('now')
+     WHERE status IN ('pending', 'processing')
+     AND updated_at < datetime('now', '-15 minutes')`
+  ).run();
+}
+
 export async function getBookSummary(request: Request, env: Env, userId: string, bookId: string): Promise<Response> {
   if (!await canAccessBook(env.DB, userId, bookId)) {
     return error('Access denied', 403);

@@ -440,8 +440,9 @@ export async function forgotPassword(request: Request, env: Env): Promise<Respon
     'INSERT INTO password_reset_tokens (id, user_id, token_hash, expires_at) VALUES (?, ?, ?, ?)'
   ).bind(id, user.id, tokenHash, expiresAt).run();
 
-  // Send reset email
-  const resetUrl = `https://ledger.weavehub.app/?reset_token=${resetToken}&email=${encodeURIComponent(user.email)}`;
+  // Send reset email — use APP_URL if set, fall back to the hosted web app
+  const appBase = (env as any).APP_URL || 'https://ledger.weavehub.app';
+  const resetUrl = `${appBase}/?reset_token=${resetToken}&email=${encodeURIComponent(user.email)}`;
 
   try {
     await env.SEND_EMAIL.send({

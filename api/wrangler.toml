@@ -41,6 +41,8 @@ class_name = "ReceiptProcessorWorkflow"
 SUBSCRIPTION_ENFORCEMENT = "none"
 # LICENSING_URL = "https://licensing.weavehub.app"  # Only needed when SUBSCRIPTION_ENFORCEMENT = "licensing"
 # APPLE_BUNDLE_ID = "com.yourcompany.yourapp"  # Optional: restrict Apple IAP verification to a specific bundle ID
+# ALLOWED_ORIGIN = "https://your-frontend.example.com"  # Optional: override default CORS origin for a custom web frontend
+# APP_URL = "https://your-frontend.example.com"         # Optional: base URL used in password reset emails (same as ALLOWED_ORIGIN if using a custom web frontend)
 
 # Environment variables (set via wrangler secret put)
 # Required:
