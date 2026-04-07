@@ -84,11 +84,16 @@ async function getGoogleAccessToken(creds: GooglePlayCredentials): Promise<strin
   return tokenData.access_token;
 }
 
-// Map Google Play subscription states to our status enum
+// Map Google Play subscription states to our status enum.
+// Note: SUBSCRIPTION_STATE_CANCELED means "auto-renew off, access remains
+// until expiryTime" — equivalent to Stripe's active + cancel_at_period_end.
+// True loss-of-access is SUBSCRIPTION_STATE_EXPIRED. Keeping CANCELED as
+// 'active' (with canceled_at / cancel_at populated) matches how Stripe and
+// Apple cancellations are modeled elsewhere in this codebase.
 function mapGoogleState(state: string): string {
   switch (state) {
     case 'SUBSCRIPTION_STATE_ACTIVE': return 'active';
-    case 'SUBSCRIPTION_STATE_CANCELED': return 'canceled';
+    case 'SUBSCRIPTION_STATE_CANCELED': return 'active';
     case 'SUBSCRIPTION_STATE_IN_GRACE_PERIOD': return 'past_due';
     case 'SUBSCRIPTION_STATE_ON_HOLD': return 'unpaid';
     case 'SUBSCRIPTION_STATE_PAUSED': return 'paused';
