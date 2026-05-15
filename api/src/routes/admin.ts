@@ -1,8 +1,10 @@
 import { Env } from '../types';
-import { generateId } from '../utils/crypto';
+import { generateId, decryptValue } from '../utils/crypto';
 import { error, success } from '../utils/response';
 import { convertToUsdCents } from '../utils/fx';
 import { reconcileAllUsers } from '../services/reconciliation';
+import { syncAppleAppStore } from '../services/integrations/apple-app-store';
+import { syncGooglePlayEarnings } from '../services/integrations/google-play-earnings';
 
 /**
  * LED-39 — admin/observability endpoints. All require an authenticated user
@@ -104,6 +106,55 @@ export async function backfillUsd(_request: Request, env: Env, userId: string): 
     remaining: remaining?.n ?? 0,
     errors: errors.slice(0, 10),
   });
+}
+
+/**
+ * POST /api/admin/backfill-fees
+ *
+ * Re-runs Apple salesReports (which now captures Customer Price → gross
+ * + real fee) and Google Play earnings reports for all active
+ * integrations belonging to the authenticated user. Upserts overwrite
+ * the older rows with the LED-39 gross/fee/net data. Idempotent —
+ * matches by source_transaction_id so re-running is a no-op once data
+ * is up to date.
+ */
+export async function backfillFees(_request: Request, env: Env, userId: string): Promise<Response> {
+  const result = { apple: { synced: 0, errors: [] as string[] }, google: { reports: 0, rows: 0, errors: [] as string[] } };
+
+  const apple = await env.DB.prepare(
+    `SELECT id, credentials FROM integrations
+     WHERE user_id = ? AND is_active = 1 AND provider = 'apple_app_store'`
+  ).bind(userId).all<{ id: string; credentials: string }>();
+  for (const row of apple.results) {
+    try {
+      const decrypted = await decryptValue(row.credentials, env.JWT_SECRET, userId);
+      const creds = JSON.parse(decrypted);
+      const r = await syncAppleAppStore(env, userId, row.id, creds, null);
+      result.apple.synced += r.synced;
+      result.apple.errors.push(...r.errors);
+    } catch (e) {
+      result.apple.errors.push(`apple ${row.id}: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+
+  const gp = await env.DB.prepare(
+    `SELECT id, credentials FROM integrations
+     WHERE user_id = ? AND is_active = 1 AND provider = 'google_play'`
+  ).bind(userId).all<{ id: string; credentials: string }>();
+  for (const row of gp.results) {
+    try {
+      const decrypted = await decryptValue(row.credentials, env.JWT_SECRET, userId);
+      const creds = JSON.parse(decrypted);
+      const r = await syncGooglePlayEarnings(env, userId, row.id, creds);
+      result.google.reports += r.reportsFetched;
+      result.google.rows += r.rowsUpserted;
+      result.google.errors.push(...r.errors);
+    } catch (e) {
+      result.google.errors.push(`gp ${row.id}: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+
+  return success(result);
 }
 
 /**

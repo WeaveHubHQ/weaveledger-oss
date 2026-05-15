@@ -6,7 +6,7 @@ import { listBooks, createBook, getBook, updateBook, deleteBook, shareBook, revo
 import { listReceipts, createReceipt, getReceipt, updateReceipt, deleteReceipt, uploadReceiptImage, getReceiptImage, getReceiptAttachment, retryReceipt, getBookSummary, cleanupStuckReceipts } from './routes/receipts';
 import { exportBook } from './services/export';
 import { listIntegrations, upsertIntegration, deleteIntegration, syncIntegration, syncAllIntegrations, listIncomeTransactions, getIncomeSummary, listPayouts, markPayoutReceived, getIncomeDashboard } from './routes/income';
-import { triggerReconcile, backfillUsd, listCronRuns } from './routes/admin';
+import { triggerReconcile, backfillUsd, backfillFees, listCronRuns } from './routes/admin';
 import { generateId } from './utils/crypto';
 import { listSubscriptions, getSubscriptionSummary, getSubscriptionForecast, syncSubscriptions, addGooglePlaySubscription, handleGooglePlayWebhook } from './routes/subscriptions';
 import { verifyAppSubscription, getAppSubscriptionStatus, restoreAppSubscription, handleAppleNotificationWebhook } from './routes/app-subscription';
@@ -364,6 +364,9 @@ export default {
       if (path === '/api/admin/backfill-usd' && method === 'POST') {
         return paid(() => backfillUsd(request, env, userId));
       }
+      if (path === '/api/admin/backfill-fees' && method === 'POST') {
+        return paid(() => backfillFees(request, env, userId));
+      }
       if (path === '/api/admin/cron-runs' && method === 'GET') {
         return paid(() => listCronRuns(request, env, userId));
       }
@@ -531,6 +534,21 @@ export default {
             await syncAppleFinanceReports(env, row.user_id, row.integration_id, creds);
           } catch (e) {
             console.error('[cron daily] finance-reports failed:', e);
+          }
+        }
+        // LED-39: Google Play earnings reports (real per-transaction fees).
+        const { syncGooglePlayEarnings } = await import('./services/integrations/google-play-earnings');
+        const gp = await env.DB.prepare(
+          `SELECT user_id, id AS integration_id, credentials FROM integrations
+           WHERE is_active = 1 AND provider = 'google_play'`
+        ).all<{ user_id: string; integration_id: string; credentials: string }>();
+        for (const row of gp.results) {
+          try {
+            const decrypted = await decryptValue(row.credentials, env.JWT_SECRET, row.user_id);
+            const creds = JSON.parse(decrypted);
+            await syncGooglePlayEarnings(env, row.user_id, row.integration_id, creds);
+          } catch (e) {
+            console.error('[cron daily] gp earnings failed:', e);
           }
         }
         const marked = await autoMarkOverduePayouts(env);

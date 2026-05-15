@@ -439,7 +439,7 @@ tr{cursor:pointer}
     <div class="card"><div class="card-header"><span class="card-title">By Source</span></div><ul class="cat-list" id="incomeSourceList"></ul></div>
   </div>
   <div class="card" style="padding:0;overflow:hidden">
-    <div class="table-wrap"><table><thead><tr><th>Date</th><th>Source</th><th>Description</th><th>Amount</th><th>Net</th></tr></thead><tbody id="incomeTable"></tbody></table></div>
+    <div class="table-wrap"><table><thead><tr><th>Date</th><th>Source</th><th>Description</th><th style="text-align:right">Customer Paid</th><th style="text-align:right">Platform Fee</th><th style="text-align:right">You Earned</th></tr></thead><tbody id="incomeTable"></tbody></table></div>
     <div class="pagination" id="incomePagination"></div>
   </div>
 </div>
@@ -1764,10 +1764,17 @@ async function loadIncome(page){
   try{
     var sum=await api('/api/income/summary');
     var o=sum.overview||{};
+    // LED-39: tiles show gross (customer paid), fee (platform commission),
+    // and net (developer keeps). The label "after fees" makes it explicit
+    // that Net Revenue is post-commission.
+    var grossCents=o.gross_cents||o.total_cents||0;
+    var feeCents=o.fee_cents||0;
+    var netCents=o.net_cents||(grossCents-feeCents);
+    var feePct=grossCents>0?Math.round((feeCents/grossCents)*100):0;
     $('incomeStats').replaceChildren(
-      statCard('Total Revenue',fmt((o.total_cents||0)/100),(o.count||0)+' transactions'),
-      statCard('Net Revenue',fmt((o.net_cents||0)/100),'after fees'),
-      statCard('Total Fees',fmt((o.fee_cents||0)/100),'platform fees')
+      statCard('Customer Paid',fmt(grossCents/100),(o.count||0)+' transactions'),
+      statCard('Platform Fees',fmt(feeCents/100),feePct?feePct+'% effective':'platform commission'),
+      statCard('You Earned',fmt(netCents/100),'after fees')
     );
     // Monthly chart
     var mc=$('incomeMonthlyChart');mc.replaceChildren();
@@ -1801,32 +1808,44 @@ async function loadIncome(page){
 }
 function renderIncomeTable(txns){
   var t=$('incomeTable');t.replaceChildren();
-  if(!txns.length){t.appendChild(el('tr',null,[el('td',{colspan:'5',style:{textAlign:'center',padding:'40px',color:'var(--text-light)'}},'No income transactions')]));return}
+  if(!txns.length){t.appendChild(el('tr',null,[el('td',{colspan:'6',style:{textAlign:'center',padding:'40px',color:'var(--text-light)'}},'No income transactions')]));return}
   var srcNames={'stripe':'Stripe','google_play':'Google Play','apple_app_store':'App Store'};
   txns.forEach(function(tx){
-    // LED-33: show USD-normalized amount as primary; local currency as hint.
-    // tx.amount is in the row's local currency (cents). tx.usd_amount_cents
-    // is the USD-converted value (cents) at the row's transaction_date.
-    var usdCents=tx.usd_amount_cents;
-    var localCents=tx.amount;
-    var localCcy=(tx.currency||'USD').toUpperCase();
-    var primary=usdCents!=null?fmt(usdCents/100):(localCcy==='USD'?fmt(localCents/100):'--');
-    var hint='';
-    if(usdCents!=null&&localCcy!=='USD'){
-      hint=localCcy+' '+(localCents/100).toFixed(2);
-    } else if(usdCents==null&&localCcy!=='USD'){
-      hint=localCcy+' '+(localCents/100).toFixed(2)+' (no FX)';
-    }
-    var amountCell=el('td',{style:{fontWeight:'600',fontVariantNumeric:'tabular-nums'}},[
-      el('div',null,primary),
-      hint?el('div',{style:{fontSize:'11px',fontWeight:'400',color:'var(--text-light)'}},hint):null
-    ].filter(Boolean));
+    // LED-39: render three money columns — gross (customer paid), fee
+    // (platform commission), net (developer earned). Primary number in USD;
+    // local currency as a hint beneath. Effective commission rate shown on
+    // hover via title attribute (decided: hover only, no dedicated column).
+    var grossLocal=tx.gross_amount!=null?tx.gross_amount:tx.amount;
+    var grossCcy=(tx.gross_currency||tx.currency||'USD').toUpperCase();
+    var grossUsd=tx.usd_gross_cents!=null?tx.usd_gross_cents:tx.usd_amount_cents;
+    var feeUsd=tx.usd_fee_cents;
+    var netUsd=grossUsd!=null?(grossUsd-(feeUsd||0)):null;
+    var feePct=(grossUsd&&feeUsd!=null&&grossUsd!==0)?Math.round((feeUsd/grossUsd)*100):null;
+
+    var fmtCell=function(usdCents, localCents, ccy, isFee){
+      var primary=usdCents!=null?fmt(usdCents/100):(ccy==='USD'?fmt(localCents/100):'--');
+      var hint='';
+      if(usdCents!=null&&ccy!=='USD'&&localCents!=null){
+        hint=ccy+' '+(localCents/100).toFixed(2);
+      }
+      return el('td',{
+        style:{fontWeight:isFee?'400':'600',fontVariantNumeric:'tabular-nums',textAlign:'right',color:isFee?'var(--text-light)':''},
+      },[
+        el('div',null,primary),
+        hint?el('div',{style:{fontSize:'11px',fontWeight:'400',color:'var(--text-light)'}},hint):null
+      ].filter(Boolean));
+    };
+
+    var feeCell=fmtCell(feeUsd,null,grossCcy,true);
+    if(feePct!=null) feeCell.setAttribute('title','Effective commission rate: '+feePct+'%');
+
     t.appendChild(el('tr',null,[
       el('td',null,fmtDate(tx.transaction_date)),
       el('td',null,[el('span',{className:'source-badge'},srcNames[tx.source]||tx.source)]),
       el('td',null,tx.description||'--'),
-      amountCell,
-      el('td',{style:{fontVariantNumeric:'tabular-nums'}},tx.net_amount!=null?(localCcy==='USD'?fmt(tx.net_amount/100):localCcy+' '+(tx.net_amount/100).toFixed(2)):'--')
+      fmtCell(grossUsd, grossLocal, grossCcy, false),
+      feeCell,
+      fmtCell(netUsd, tx.net_amount, (tx.currency||'USD').toUpperCase(), false),
     ]));
   });
 }
