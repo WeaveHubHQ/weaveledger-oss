@@ -1771,7 +1771,7 @@ async function loadIncome(page){
     );
     // Monthly chart
     var mc=$('incomeMonthlyChart');mc.replaceChildren();
-    var months=(sum.by_month||[]).slice().sort(function(a,b){return a.month.localeCompare(b.month)}).slice(-12);
+    var months=(sum.by_month||[]).filter(function(m){return m&&m.month}).slice().sort(function(a,b){return (a.month||'').localeCompare(b.month||'')}).slice(-12);
     if(months.length){
       var max=Math.max.apply(null,months.map(function(m){return m.total_cents}))||1;
       months.forEach(function(m){
@@ -1804,12 +1804,29 @@ function renderIncomeTable(txns){
   if(!txns.length){t.appendChild(el('tr',null,[el('td',{colspan:'5',style:{textAlign:'center',padding:'40px',color:'var(--text-light)'}},'No income transactions')]));return}
   var srcNames={'stripe':'Stripe','google_play':'Google Play','apple_app_store':'App Store'};
   txns.forEach(function(tx){
+    // LED-33: show USD-normalized amount as primary; local currency as hint.
+    // tx.amount is in the row's local currency (cents). tx.usd_amount_cents
+    // is the USD-converted value (cents) at the row's transaction_date.
+    var usdCents=tx.usd_amount_cents;
+    var localCents=tx.amount;
+    var localCcy=(tx.currency||'USD').toUpperCase();
+    var primary=usdCents!=null?fmt(usdCents/100):(localCcy==='USD'?fmt(localCents/100):'--');
+    var hint='';
+    if(usdCents!=null&&localCcy!=='USD'){
+      hint=localCcy+' '+(localCents/100).toFixed(2);
+    } else if(usdCents==null&&localCcy!=='USD'){
+      hint=localCcy+' '+(localCents/100).toFixed(2)+' (no FX)';
+    }
+    var amountCell=el('td',{style:{fontWeight:'600',fontVariantNumeric:'tabular-nums'}},[
+      el('div',null,primary),
+      hint?el('div',{style:{fontSize:'11px',fontWeight:'400',color:'var(--text-light)'}},hint):null
+    ].filter(Boolean));
     t.appendChild(el('tr',null,[
       el('td',null,fmtDate(tx.transaction_date)),
       el('td',null,[el('span',{className:'source-badge'},srcNames[tx.source]||tx.source)]),
       el('td',null,tx.description||'--'),
-      el('td',{style:{fontWeight:'600',fontVariantNumeric:'tabular-nums'}},fmt(tx.amount/100)),
-      el('td',{style:{fontVariantNumeric:'tabular-nums'}},tx.net_amount!=null?fmt(tx.net_amount/100):'--')
+      amountCell,
+      el('td',{style:{fontVariantNumeric:'tabular-nums'}},tx.net_amount!=null?(localCcy==='USD'?fmt(tx.net_amount/100):localCcy+' '+(tx.net_amount/100).toFixed(2)):'--')
     ]));
   });
 }

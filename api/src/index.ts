@@ -5,7 +5,9 @@ import { register, login, changePassword, getProfile, updatePreferences, getUser
 import { listBooks, createBook, getBook, updateBook, deleteBook, shareBook, revokeShare, listInvitations, revokeInvitation } from './routes/books';
 import { listReceipts, createReceipt, getReceipt, updateReceipt, deleteReceipt, uploadReceiptImage, getReceiptImage, getReceiptAttachment, retryReceipt, getBookSummary, cleanupStuckReceipts } from './routes/receipts';
 import { exportBook } from './services/export';
-import { listIntegrations, upsertIntegration, deleteIntegration, syncIntegration, syncAllIntegrations, listIncomeTransactions, getIncomeSummary } from './routes/income';
+import { listIntegrations, upsertIntegration, deleteIntegration, syncIntegration, syncAllIntegrations, listIncomeTransactions, getIncomeSummary, listPayouts, markPayoutReceived, getIncomeDashboard } from './routes/income';
+import { triggerReconcile, backfillUsd, listCronRuns } from './routes/admin';
+import { generateId } from './utils/crypto';
 import { listSubscriptions, getSubscriptionSummary, getSubscriptionForecast, syncSubscriptions, addGooglePlaySubscription, handleGooglePlayWebhook } from './routes/subscriptions';
 import { verifyAppSubscription, getAppSubscriptionStatus, restoreAppSubscription, handleAppleNotificationWebhook } from './routes/app-subscription';
 import { listBudgets, createBudget, updateBudget, deleteBudget, getBudgetStatus } from './routes/budgets';
@@ -25,12 +27,13 @@ export default {
     // Handle CORS preflight — only respond with CORS headers for the allowed origin
     if (request.method === 'OPTIONS') {
       const reqOrigin = request.headers.get('Origin') || '';
-      if (reqOrigin !== 'https://ledger.weavehub.app') {
+      const ALLOWED_ORIGIN = env.ALLOWED_ORIGIN || 'https://ledger.weavehub.app';
+      if (reqOrigin !== ALLOWED_ORIGIN) {
         return new Response(null, { status: 204 });
       }
       return new Response(null, {
         headers: {
-          'Access-Control-Allow-Origin': 'https://ledger.weavehub.app',
+          'Access-Control-Allow-Origin': ALLOWED_ORIGIN,
           'Access-Control-Allow-Methods': 'GET, POST, PUT, PATCH, DELETE, OPTIONS',
           'Access-Control-Allow-Headers': 'Content-Type, Authorization',
           'Access-Control-Max-Age': '86400',
@@ -45,7 +48,7 @@ export default {
 
     // Add CORS headers only for allowed origins; omit entirely for unknown origins
     const origin = request.headers.get('Origin') || '';
-    const ALLOWED_ORIGIN = 'https://ledger.weavehub.app';
+    const ALLOWED_ORIGIN = env.ALLOWED_ORIGIN || 'https://ledger.weavehub.app';
     const isAllowedOrigin = origin === ALLOWED_ORIGIN;
     const addCors = (response: Response): Response => {
       if (!isAllowedOrigin) return response;
@@ -342,6 +345,29 @@ export default {
         return paid(() => getIncomeSummary(request, env, userId));
       }
 
+      // LED-33/34/36: revenue lifecycle — payouts CRUD + dashboard tiles.
+      if (path === '/api/income/dashboard' && method === 'GET') {
+        return paid(() => getIncomeDashboard(request, env, userId));
+      }
+      if (path === '/api/payouts' && method === 'GET') {
+        return paid(() => listPayouts(request, env, userId));
+      }
+      const payoutMarkMatch = path.match(/^\/api\/payouts\/([^/]+)\/mark-received$/);
+      if (payoutMarkMatch && method === 'POST') {
+        return paid(() => markPayoutReceived(request, env, userId, payoutMarkMatch[1]));
+      }
+
+      // LED-39: admin/observability — manual reconcile, USD backfill, cron audit log.
+      if (path === '/api/admin/reconcile' && method === 'POST') {
+        return paid(() => triggerReconcile(request, env, userId));
+      }
+      if (path === '/api/admin/backfill-usd' && method === 'POST') {
+        return paid(() => backfillUsd(request, env, userId));
+      }
+      if (path === '/api/admin/cron-runs' && method === 'GET') {
+        return paid(() => listCronRuns(request, env, userId));
+      }
+
       // Subscriptions (paid)
       if (path === '/api/subscriptions' && method === 'GET') {
         return paid(() => listSubscriptions(request, env, userId));
@@ -440,12 +466,78 @@ export default {
       ctx.waitUntil(cleanupStuckReceipts(env));
       return;
     }
-    // Daily 06:00 UTC: full sync of integrations, recurring expenses, and a
-    // belt-and-suspenders cleanup pass.
-    ctx.waitUntil(Promise.all([
-      syncAllIntegrations(env),
-      advanceRecurringExpenses(env),
-      cleanupStuckReceipts(env),
-    ]));
+    // LED-34: monthly reconciliation — settle prior month's pending income
+    // and create predicted payouts. Runs at 07:00 UTC on day 1 of each
+    // calendar month (an hour after the daily-sync window).
+    // LED-39: wrap in cron_runs audit so silent failures surface within hours.
+    if (event.cron === '0 7 1 * *') {
+      const { reconcileAllUsers } = await import('./services/reconciliation');
+      const runId = generateId('cron');
+      const startedAt = new Date();
+      ctx.waitUntil((async () => {
+        try {
+          await env.DB.prepare(
+            `INSERT INTO cron_runs (id, cron_name, cron_schedule, trigger, started_at, status)
+             VALUES (?, 'reconcile_all_users', '0 7 1 * *', 'cron', ?, 'running')`
+          ).bind(runId, startedAt.toISOString()).run();
+          const summary = await reconcileAllUsers(env);
+          await env.DB.prepare(
+            `UPDATE cron_runs
+             SET finished_at = datetime('now'),
+                 duration_ms = ?, status = 'success',
+                 rows_settled = ?, payouts_created = ?, users_processed = ?
+             WHERE id = ?`
+          ).bind(
+            Date.now() - startedAt.getTime(),
+            summary.rowsSettled, summary.payoutsCreated, summary.usersProcessed,
+            runId,
+          ).run();
+        } catch (e) {
+          const msg = e instanceof Error ? e.message : String(e);
+          console.error('[cron monthly] reconcile failed:', e);
+          await env.DB.prepare(
+            `UPDATE cron_runs
+             SET finished_at = datetime('now'),
+                 duration_ms = ?, status = 'error', error_message = ?
+             WHERE id = ?`
+          ).bind(Date.now() - startedAt.getTime(), msg.slice(0, 1000), runId).run();
+        }
+      })());
+      return;
+    }
+    // Daily 06:00 UTC: full sync of integrations, recurring expenses,
+    // cleanup pass, AND payout maintenance (LED-38): pull Apple finance
+    // reports + auto-mark overdue predicted payouts as paid.
+    ctx.waitUntil((async () => {
+      await Promise.all([
+        syncAllIntegrations(env),
+        advanceRecurringExpenses(env),
+        cleanupStuckReceipts(env),
+      ]);
+      try {
+        const { autoMarkOverduePayouts } = await import('./services/reconciliation');
+        const { syncAppleFinanceReports } = await import('./services/integrations/apple-finance-reports');
+        const { decryptValue } = await import('./utils/crypto');
+
+        // Daily Apple finance-report scan (sub-threshold months 404; that's expected).
+        const apple = await env.DB.prepare(
+          `SELECT user_id, id AS integration_id, credentials FROM integrations
+           WHERE is_active = 1 AND provider = 'apple_app_store'`
+        ).all<{ user_id: string; integration_id: string; credentials: string }>();
+        for (const row of apple.results) {
+          try {
+            const decrypted = await decryptValue(row.credentials, env.JWT_SECRET, row.user_id);
+            const creds = JSON.parse(decrypted);
+            await syncAppleFinanceReports(env, row.user_id, row.integration_id, creds);
+          } catch (e) {
+            console.error('[cron daily] finance-reports failed:', e);
+          }
+        }
+        const marked = await autoMarkOverduePayouts(env);
+        if (marked > 0) console.log(`[cron daily] auto-marked ${marked} overdue payouts paid`);
+      } catch (e) {
+        console.error('[cron daily] payout maintenance failed:', e);
+      }
+    })());
   },
 };
