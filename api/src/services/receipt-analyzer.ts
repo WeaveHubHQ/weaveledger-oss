@@ -87,8 +87,10 @@ async function callAnthropic(apiKey: string, messages: unknown[]): Promise<Recei
       'anthropic-version': '2023-06-01',
     },
     body: JSON.stringify({
+      // 4096 tokens covers receipts with long descriptions or many line items.
+      // 1024 was truncating mid-JSON for emailed invoices and producing unparseable output.
       model: 'claude-sonnet-4-20250514',
-      max_tokens: 1024,
+      max_tokens: 4096,
       system: SYSTEM_PROMPT,
       messages,
     }),
@@ -139,8 +141,11 @@ async function callOpenAI(apiKey: string, messages: unknown[]): Promise<ReceiptA
       'Authorization': `Bearer ${apiKey}`,
     },
     body: JSON.stringify({
+      // response_format guarantees JSON output without markdown fences, eliminating
+      // one whole class of parser failure. max_tokens raised to 4096 to match Anthropic.
       model: 'gpt-4o',
-      max_tokens: 1024,
+      max_tokens: 4096,
+      response_format: { type: 'json_object' },
       messages: [
         { role: 'system', content: SYSTEM_PROMPT },
         ...messages,
@@ -165,40 +170,47 @@ async function callOpenAI(apiKey: string, messages: unknown[]): Promise<ReceiptA
 
 function parseAnalysisResponse(text: string): ReceiptAnalysis {
   let cleaned = text.trim();
-  if (cleaned.startsWith('```')) {
-    cleaned = cleaned.replace(/^```(?:json)?\n?/, '').replace(/\n?```$/, '');
+  // Permissive markdown-fence stripping: handles ```, ```json, ``` json, with or
+  // without trailing newlines/whitespace on either side.
+  cleaned = cleaned.replace(/^```\s*\w*\s*\n?/i, '').replace(/\s*```\s*$/i, '').trim();
+  // If there's prose around the JSON (which response_format=json_object on OpenAI
+  // already prevents, but Anthropic can still emit), extract the first balanced
+  // {...} block.
+  if (!cleaned.startsWith('{')) {
+    const start = cleaned.indexOf('{');
+    const end = cleaned.lastIndexOf('}');
+    if (start !== -1 && end > start) cleaned = cleaned.slice(start, end + 1);
   }
 
+  let parsed: Record<string, unknown>;
   try {
-    const parsed = JSON.parse(cleaned);
-    return {
-      merchant: parsed.merchant || null,
-      amount: typeof parsed.amount === 'number' ? parsed.amount : null,
-      currency: parsed.currency || 'USD',
-      date: parsed.date || null,
-      category: parsed.category || 'Other',
-      subcategory: parsed.subcategory || null,
-      description: parsed.description || null,
-      payment_method: parsed.payment_method || null,
-      tax_amount: typeof parsed.tax_amount === 'number' ? parsed.tax_amount : null,
-      tip_amount: typeof parsed.tip_amount === 'number' ? parsed.tip_amount : null,
-      receipt_number: parsed.receipt_number || null,
-      invoice_number: parsed.invoice_number || null,
-      line_items: Array.isArray(parsed.line_items) ? parsed.line_items : [],
-      confidence: typeof parsed.confidence === 'number' ? parsed.confidence : 0.5,
-      tax_deductible: parsed.tax_deductible === true,
-      tax_category: parsed.tax_deductible === true && parsed.tax_category ? parsed.tax_category : null,
-    };
-  } catch {
-    return {
-      merchant: null, amount: null, currency: 'USD', date: null,
-      category: 'Other', subcategory: null, description: text.slice(0, 200),
-      payment_method: null, tax_amount: null, tip_amount: null,
-      receipt_number: null, invoice_number: null,
-      line_items: [], confidence: 0,
-      tax_deductible: false, tax_category: null,
-    };
+    parsed = JSON.parse(cleaned);
+  } catch (err) {
+    // Throw rather than returning empty data marked as "successful". The workflow's
+    // outer catch will land the receipt at status='failed' with a clear note so the
+    // user sees a real failure they can retry — not a silently-empty success.
+    const detail = err instanceof Error ? err.message : 'unknown JSON error';
+    throw new Error(`AI returned unparseable response (${detail}); manual entry or retry required`);
   }
+
+  return {
+    merchant: (parsed.merchant as string) || null,
+    amount: typeof parsed.amount === 'number' ? parsed.amount : null,
+    currency: (parsed.currency as string) || 'USD',
+    date: (parsed.date as string) || null,
+    category: (parsed.category as string) || 'Other',
+    subcategory: (parsed.subcategory as string) || null,
+    description: (parsed.description as string) || null,
+    payment_method: (parsed.payment_method as string) || null,
+    tax_amount: typeof parsed.tax_amount === 'number' ? parsed.tax_amount : null,
+    tip_amount: typeof parsed.tip_amount === 'number' ? parsed.tip_amount : null,
+    receipt_number: (parsed.receipt_number as string) || null,
+    invoice_number: (parsed.invoice_number as string) || null,
+    line_items: Array.isArray(parsed.line_items) ? (parsed.line_items as ReceiptAnalysis['line_items']) : [],
+    confidence: typeof parsed.confidence === 'number' ? parsed.confidence : 0.5,
+    tax_deductible: parsed.tax_deductible === true,
+    tax_category: parsed.tax_deductible === true && parsed.tax_category ? (parsed.tax_category as string) : null,
+  };
 }
 
 function arrayBufferToBase64(buffer: ArrayBuffer): string {

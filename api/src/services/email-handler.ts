@@ -19,6 +19,7 @@ export async function handleInboundEmail(message: EmailMessage, env: Env): Promi
 
   // Reject oversized emails (25 MB limit)
   if (message.rawSize > 25 * 1024 * 1024) {
+    await logRejectedSender(env, from, to, subject, 'Email too large');
     message.setReject('Email too large');
     return;
   }
@@ -27,12 +28,16 @@ export async function handleInboundEmail(message: EmailMessage, env: Env): Promi
   // before delivering to the Worker. Our security boundary is the sender email lookup
   // below — only registered users (or linked emails) can submit receipts.
 
-  // Verify the sender is a registered user (check primary email and linked emails)
   const senderEmail = from.toLowerCase();
+
+  // Verify the sender is a registered user (primary email OR verified linked).
+  // Linked-email verification happens out-of-band via a magic link emailed to
+  // the address being linked (see api/src/routes/auth.ts), so an inbound
+  // message from an unverified address is unambiguously a real receipt that
+  // should be rejected.
   let user = await env.DB.prepare('SELECT id FROM users WHERE email = ?').bind(senderEmail).first<{ id: string }>();
 
   if (!user) {
-    // Check linked emails
     const linked = await env.DB.prepare(
       'SELECT user_id FROM user_emails WHERE email = ? AND verified = 1'
     ).bind(senderEmail).first<{ user_id: string }>();
@@ -42,6 +47,7 @@ export async function handleInboundEmail(message: EmailMessage, env: Env): Promi
   }
 
   if (!user) {
+    await logRejectedSender(env, from, to, subject, 'Sender not registered');
     message.setReject('Sender not registered');
     return;
   }
@@ -141,6 +147,21 @@ export async function handleInboundEmail(message: EmailMessage, env: Env): Promi
     } catch {
       await env.DB.prepare("UPDATE receipts SET status = 'processing' WHERE id = ?").bind(receiptId).run();
     }
+  }
+}
+
+// LED-26: persist every reject so future bounces are diagnosable from D1
+// without live `wrangler tail`. We swallow DB errors here — failing to log
+// must not turn a routine reject into a 500.
+async function logRejectedSender(
+  env: Env, from: string, to: string, subject: string, reason: string,
+): Promise<void> {
+  try {
+    await env.DB.prepare(
+      'INSERT INTO rejected_email_senders (id, from_email, to_email, subject, reason) VALUES (?, ?, ?, ?, ?)'
+    ).bind(generateId('rej'), from.toLowerCase(), to.toLowerCase(), subject.slice(0, 500), reason).run();
+  } catch (err) {
+    console.error('[Email] Failed to log rejected sender:', err);
   }
 }
 

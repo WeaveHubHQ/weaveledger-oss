@@ -6,20 +6,22 @@ export interface Env {
   OPENAI_API_KEY: string;
   RECEIPT_WORKFLOW: Workflow;
   GOOGLE_PLAY_WEBHOOK_SECRET: string;
-  SEND_EMAIL: { send: (message: EmailMessage) => Promise<void> };
+  SEND_EMAIL: { send: (message: OutboundEmail) => Promise<void> };
   SUBSCRIPTION_ENFORCEMENT?: string;  // "licensing" | "apple" | "none" (default: treat as "none")
   APPLE_BUNDLE_ID?: string;           // "app.weavehub.WeaveLedger"
   LICENSING_URL?: string;             // "https://licensing.weavehub.app" (for SUBSCRIPTION_ENFORCEMENT=licensing)
   LICENSING_API_KEY?: string;         // Shared secret for authenticating with the licensing worker
-  ALLOWED_ORIGIN?: string;            // Override default CORS origin (e.g. for a custom web frontend)
-  APP_URL?: string;                   // Base URL of your web frontend — used in password reset emails
 }
 
-export interface EmailMessage {
-  from: { name: string; email: string };
-  to: { email: string }[];
+// Cloudflare Email Service (April 2026 public beta) outbound message shape.
+// Used via the `send_email` Worker binding declared in wrangler.toml.
+export interface OutboundEmail {
+  to: string | string[];
+  from: string;
   subject: string;
   html: string;
+  text?: string;
+  reply_to?: string;
 }
 
 export type AiProvider = 'anthropic' | 'openai';

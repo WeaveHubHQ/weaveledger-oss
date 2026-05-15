@@ -203,7 +203,103 @@ export async function getProfile(request: Request, env: Env, userId: string): Pr
   });
 }
 
-// Linked email management for receipt capture
+// Linked email management for receipt capture.
+//
+// Verification model (LED-26 r2): for any address that can't be auto-trusted,
+// the worker issues a 256-bit URL-safe random token (1-hour TTL) and emails a
+// magic link to that address via env.SEND_EMAIL (Cloudflare Email Service,
+// public beta April 2026). The recipient clicks the link, which hits the
+// public GET /verify-email?t=<token> route, marks verified=1, and shows a
+// branded success page. No copy-paste, no outbound vendor.
+const PUBLIC_EMAIL_DOMAINS = new Set([
+  'gmail.com', 'googlemail.com', 'outlook.com', 'hotmail.com', 'live.com', 'msn.com',
+  'yahoo.com', 'yahoo.co.uk', 'ymail.com', 'aol.com', 'icloud.com', 'me.com', 'mac.com',
+  'protonmail.com', 'proton.me', 'zoho.com', 'mail.com', 'gmx.com', 'gmx.net',
+  'fastmail.com', 'tutanota.com', 'tuta.com', 'hey.com', 'pm.me',
+]);
+
+const VERIFICATION_TTL_MS = 60 * 60 * 1000; // 1 hour
+const VERIFY_SENDER = 'noreply@business.weavehub.app';
+const VERIFY_SENDER_NAME = 'WeaveLedger';
+const VERIFY_BASE_URL = 'https://ledger.weavehub.app/api/verify-email';
+
+// 32 random bytes → 43-char URL-safe base64. ~256 bits of entropy — bearer
+// auth grade. Used as the token in the magic link.
+function generateVerificationToken(): string {
+  const bytes = new Uint8Array(32);
+  crypto.getRandomValues(bytes);
+  let binary = '';
+  for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+  return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+function buildVerificationEmail(linkedAddress: string, magicLink: string): { html: string; text: string } {
+  const text = [
+    `You requested to link ${linkedAddress} as a sender address for your WeaveLedger account.`,
+    '',
+    `Click this link within 1 hour to verify:`,
+    magicLink,
+    '',
+    `If you didn't request this, ignore this email — no changes will be made.`,
+  ].join('\n');
+
+  const html = `<!doctype html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>
+<body style="margin:0;padding:0;background:#F5F0E8;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;color:#0A1628;">
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#F5F0E8;padding:40px 16px;">
+    <tr><td align="center">
+      <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="max-width:560px;background:#FFFFFF;border-radius:16px;border:1px solid #E8E0D0;">
+        <tr><td style="padding:32px 32px 8px 32px;">
+          <div style="font-family:'Times New Roman',Georgia,serif;font-size:24px;line-height:1.2;">
+            <span style="color:#0A1628;">Weave</span><span style="color:#C9A84C;">Ledger</span>
+          </div>
+        </td></tr>
+        <tr><td style="padding:16px 32px 8px 32px;">
+          <h1 style="font-size:20px;font-weight:600;margin:0 0 12px 0;color:#0A1628;">Verify your sender address</h1>
+          <p style="font-size:15px;line-height:1.5;margin:0 0 16px 0;color:#0A1628;">
+            You requested to link <strong>${escapeHtml(linkedAddress)}</strong> as a sender address for your WeaveLedger account.
+            Click the button below to confirm — receipts forwarded from this address will then be attributed to your account.
+          </p>
+        </td></tr>
+        <tr><td align="center" style="padding:8px 32px 24px 32px;">
+          <a href="${magicLink}" style="display:inline-block;background:#C9A84C;color:#0A1628;text-decoration:none;font-weight:600;font-size:16px;padding:14px 28px;border-radius:12px;">Verify this address</a>
+        </td></tr>
+        <tr><td style="padding:0 32px 24px 32px;">
+          <p style="font-size:13px;line-height:1.5;margin:0 0 8px 0;color:#4B5563;">
+            Or copy and paste this URL into your browser:
+          </p>
+          <p style="font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;word-break:break-all;background:#E8E0D0;padding:10px 12px;border-radius:8px;margin:0 0 16px 0;color:#0A1628;">
+            ${magicLink}
+          </p>
+          <p style="font-size:12px;line-height:1.5;margin:0;color:#6B7280;">
+            This link expires in 1 hour. If you didn't request this, you can safely ignore this email.
+          </p>
+        </td></tr>
+      </table>
+    </td></tr>
+  </table>
+</body></html>`;
+
+  return { html, text };
+}
+
+function escapeHtml(s: string): string {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
+async function sendVerificationEmail(env: Env, linkedAddress: string, token: string): Promise<void> {
+  const magicLink = `${VERIFY_BASE_URL}?t=${encodeURIComponent(token)}`;
+  const { html, text } = buildVerificationEmail(linkedAddress, magicLink);
+
+  await env.SEND_EMAIL.send({
+    to: linkedAddress,
+    from: `${VERIFY_SENDER_NAME} <${VERIFY_SENDER}>`,
+    subject: 'Verify your WeaveLedger sender address',
+    html,
+    text,
+  });
+}
+
 export async function addLinkedEmail(request: Request, env: Env, userId: string): Promise<Response> {
   const body = await request.json<{ email: string }>();
   if (!body.email) return error('Email is required');
@@ -213,50 +309,153 @@ export async function addLinkedEmail(request: Request, env: Env, userId: string)
 
   const email = body.email.toLowerCase();
 
-  // Check it's not already a primary account email
   const existingUser = await env.DB.prepare('SELECT id FROM users WHERE email = ?').bind(email).first();
   if (existingUser) return error('This email is already a primary account email', 409);
 
-  // Check it's not already linked
-  const existingLink = await env.DB.prepare('SELECT id FROM user_emails WHERE email = ?').bind(email).first();
+  const existingLink = await env.DB.prepare('SELECT id, user_id, verified FROM user_emails WHERE email = ?')
+    .bind(email).first<{ id: string; user_id: string; verified: number }>();
   if (existingLink) return error('This email is already linked to an account', 409);
 
-  // Generate a 6-digit verification code
-  const code = String(Math.floor(100000 + Math.random() * 900000));
-  const expires = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(); // 24 hours
-
-  // Only allow linking emails from the same domain as the user's primary email
   const user = await env.DB.prepare('SELECT email FROM users WHERE id = ?').bind(userId).first<{ email: string }>();
   if (!user) return error('User not found', 404);
 
-  const primaryDomain = user.email.split('@')[1];
-  const linkedDomain = email.split('@')[1];
-  if (primaryDomain !== linkedDomain) {
-    return error(`Only emails from @${primaryDomain} can be linked. Email verification for other domains is not yet available.`);
-  }
+  const primaryDomain = user.email.split('@')[1].toLowerCase();
+  const linkedDomain = email.split('@')[1].toLowerCase();
+  const sameCustomDomain = primaryDomain === linkedDomain && !PUBLIC_EMAIL_DOMAINS.has(primaryDomain);
 
   const id = generateId('ue');
-  await env.DB.prepare(
-    'INSERT INTO user_emails (id, user_id, email, verification_code, verification_expires) VALUES (?, ?, ?, ?, ?)'
-  ).bind(id, userId, email, code, expires).run();
 
-  // Auto-verify same-domain emails ONLY for private/custom domains (not public providers)
-  const PUBLIC_EMAIL_DOMAINS = [
-    'gmail.com', 'googlemail.com', 'outlook.com', 'hotmail.com', 'live.com', 'msn.com',
-    'yahoo.com', 'yahoo.co.uk', 'ymail.com', 'aol.com', 'icloud.com', 'me.com', 'mac.com',
-    'protonmail.com', 'proton.me', 'zoho.com', 'mail.com', 'gmx.com', 'gmx.net',
-    'fastmail.com', 'tutanota.com', 'tuta.com', 'hey.com', 'pm.me',
-  ];
-  if (PUBLIC_EMAIL_DOMAINS.includes(primaryDomain.toLowerCase())) {
-    return success({ id, email, verified: false }, 'Email linked. Verification is required — check your inbox for the verification code.');
+  // Same custom domain → trust transitively: the user already proved control
+  // of the domain by registering their primary on it.
+  if (sameCustomDomain) {
+    await env.DB.prepare(
+      'INSERT INTO user_emails (id, user_id, email, verified) VALUES (?, ?, ?, 1)'
+    ).bind(id, userId, email).run();
+
+    return success(
+      { id, email, verified: true },
+      'Email linked successfully. Receipts sent from this address will be attributed to your account.'
+    );
   }
 
-  // Custom/private domain — auto-verify (trusted since user already verified primary on same domain)
-  await env.DB.prepare(
-    'UPDATE user_emails SET verified = 1, verification_code = NULL WHERE id = ?'
-  ).bind(id).run();
+  // Public-provider or cross-domain → magic-link verification.
+  const token = generateVerificationToken();
+  const expires = new Date(Date.now() + VERIFICATION_TTL_MS).toISOString();
 
-  return success({ id, email, verified: true }, 'Email linked successfully. Receipts sent from this address will be attributed to your account.');
+  await env.DB.prepare(
+    'INSERT INTO user_emails (id, user_id, email, verification_code, verification_expires) VALUES (?, ?, ?, ?, ?)'
+  ).bind(id, userId, email, token, expires).run();
+
+  try {
+    await sendVerificationEmail(env, email, token);
+  } catch (err) {
+    // Roll back the pending row — leaving an unsent pending verification
+    // would block the user from re-adding the same address.
+    await env.DB.prepare('DELETE FROM user_emails WHERE id = ?').bind(id).run();
+    console.error('[Auth] Failed to send verification email:', err);
+    return error('Could not send verification email. Try again in a moment.', 502);
+  }
+
+  return success(
+    { id, email, verified: false, verification_expires: expires },
+    `We sent a verification link to ${email}. Tap the link in that email within 1 hour, then return here and refresh.`
+  );
+}
+
+// Re-send the magic link (e.g., if the user lost or expired the original).
+export async function resendLinkedEmailVerification(
+  request: Request, env: Env, userId: string, emailId: string,
+): Promise<Response> {
+  const row = await env.DB.prepare(
+    'SELECT id, email, verified FROM user_emails WHERE id = ? AND user_id = ?'
+  ).bind(emailId, userId).first<{ id: string; email: string; verified: number }>();
+
+  if (!row) return error('Linked email not found', 404);
+  if (row.verified === 1) return error('Email is already verified', 409);
+
+  const token = generateVerificationToken();
+  const expires = new Date(Date.now() + VERIFICATION_TTL_MS).toISOString();
+
+  await env.DB.prepare(
+    'UPDATE user_emails SET verification_code = ?, verification_expires = ? WHERE id = ?'
+  ).bind(token, expires, emailId).run();
+
+  try {
+    await sendVerificationEmail(env, row.email, token);
+  } catch (err) {
+    console.error('[Auth] Failed to re-send verification email:', err);
+    return error('Could not send verification email. Try again in a moment.', 502);
+  }
+
+  return success(
+    { id: row.id, email: row.email, verified: false, verification_expires: expires },
+    `New verification link sent to ${row.email}.`
+  );
+}
+
+// Public route — bearer auth is the token itself. Hit by clicking the link in
+// the verification email. Marks the linked email verified and returns a small
+// branded HTML page.
+export async function verifyLinkedEmailLink(request: Request, env: Env): Promise<Response> {
+  const url = new URL(request.url);
+  const token = url.searchParams.get('t');
+
+  if (!token) return verificationPage('Missing verification token', 'This verification URL is incomplete. Request a new link from WeaveLedger and try again.', 400);
+
+  const row = await env.DB.prepare(
+    `SELECT id, email, verified, verification_expires FROM user_emails
+     WHERE verification_code = ?`
+  ).bind(token).first<{ id: string; email: string; verified: number; verification_expires: string | null }>();
+
+  if (!row) return verificationPage('Link not recognized', "This verification link isn't valid. It may have already been used, or a newer link was sent. Request a new link from WeaveLedger and try the most recent email.", 404);
+
+  if (row.verified === 1) {
+    return verificationPage('Already verified', `${row.email} is already linked to your WeaveLedger account. You can close this tab.`, 200, true);
+  }
+
+  if (row.verification_expires && new Date(row.verification_expires).getTime() < Date.now()) {
+    return verificationPage('Link expired', 'Verification links are valid for 1 hour. Request a new one from WeaveLedger and try again.', 410);
+  }
+
+  await env.DB.prepare(
+    'UPDATE user_emails SET verified = 1, verification_code = NULL, verification_expires = NULL WHERE id = ?'
+  ).bind(row.id).run();
+
+  return verificationPage('Verified', `${row.email} is now linked to your WeaveLedger account. Return to the app and tap Check status — receipts forwarded from this address will be attributed to your account.`, 200, true);
+}
+
+function verificationPage(heading: string, body: string, status: number, ok: boolean = false): Response {
+  const accent = ok ? '#C9A84C' : '#0A1628';
+  const icon = ok ? '✓' : '•';
+  const html = `<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>${escapeHtml(heading)} — WeaveLedger</title>
+<style>
+  body{margin:0;background:#0A1628;color:#F5F0E8;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px;}
+  .card{max-width:480px;width:100%;background:#132240;border-radius:20px;padding:40px 32px;text-align:center;border:1px solid #1A3058;}
+  .brand{font-family:'Times New Roman',Georgia,serif;font-size:28px;margin-bottom:24px;}
+  .brand .a{color:#FFFFFF;} .brand .b{color:#E4CC7A;}
+  .icon{font-size:48px;color:${accent};margin-bottom:8px;line-height:1;}
+  h1{font-size:22px;font-weight:600;margin:0 0 12px 0;}
+  p{font-size:15px;line-height:1.5;margin:0;color:rgba(245,240,232,0.85);}
+</style></head>
+<body><div class="card">
+  <div class="brand"><span class="a">Weave</span><span class="b">Ledger</span></div>
+  <div class="icon">${icon}</div>
+  <h1>${escapeHtml(heading)}</h1>
+  <p>${escapeHtml(body)}</p>
+</div></body></html>`;
+
+  return new Response(html, {
+    status,
+    headers: {
+      'Content-Type': 'text/html; charset=utf-8',
+      'X-Content-Type-Options': 'nosniff',
+      'X-Frame-Options': 'DENY',
+      'Referrer-Policy': 'strict-origin',
+      'Cache-Control': 'no-store',
+    },
+  });
 }
 
 export async function removeLinkedEmail(request: Request, env: Env, userId: string, emailId: string): Promise<Response> {
@@ -440,14 +639,13 @@ export async function forgotPassword(request: Request, env: Env): Promise<Respon
     'INSERT INTO password_reset_tokens (id, user_id, token_hash, expires_at) VALUES (?, ?, ?, ?)'
   ).bind(id, user.id, tokenHash, expiresAt).run();
 
-  // Send reset email — use APP_URL if set, fall back to the hosted web app
-  const appBase = (env as any).APP_URL || 'https://ledger.weavehub.app';
-  const resetUrl = `${appBase}/?reset_token=${resetToken}&email=${encodeURIComponent(user.email)}`;
+  // Send reset email
+  const resetUrl = `https://ledger.weavehub.app/?reset_token=${resetToken}&email=${encodeURIComponent(user.email)}`;
 
   try {
     await env.SEND_EMAIL.send({
-      from: { name: 'WeaveLedger', email: 'noreply@weavehub.app' },
-      to: [{ email: user.email }],
+      from: 'WeaveLedger <noreply@business.weavehub.app>',
+      to: user.email,
       subject: 'Reset your WeaveLedger password',
       html: `
         <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 480px; margin: 0 auto; padding: 32px;">
@@ -460,6 +658,7 @@ export async function forgotPassword(request: Request, env: Env): Promise<Respon
           <p style="color: #a0aec0; font-size: 12px;">WeaveLedger &mdash; Weave your finances together</p>
         </div>
       `,
+      text: `Hi ${user.name},\n\nWe received a request to reset your WeaveLedger password. Open this link within 15 minutes:\n\n${resetUrl}\n\nIf you didn't request this, ignore this email.`,
     });
   } catch (e) {
     console.error('Failed to send reset email:', e);
