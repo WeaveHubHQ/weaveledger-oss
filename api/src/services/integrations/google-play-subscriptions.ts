@@ -1,5 +1,6 @@
 import { Env } from '../../types';
 import { generateId } from '../../utils/crypto';
+import { convertToUsdCents } from '../../utils/fx';
 
 interface GooglePlayCredentials {
   client_email: string;
@@ -230,6 +231,17 @@ export async function handleGooglePlayNotification(
     JSON.stringify(sub)
   ).run();
 
+  // LED-37: on REVOKED (type 12) write a negative income row referencing the
+  // most recent positive order for this purchase token. Google's next payout
+  // will already reflect the chargeback / refund.
+  if (notificationType === 12) {
+    try {
+      await writeGooglePlayRefundIncome(env, userId, integrationId, purchaseToken, sub.latestOrderId);
+    } catch (e) {
+      console.error('[GP RTDN] Failed to write refund row:', e);
+    }
+  }
+
   // LED-31: write an income_transactions row for revenue-bearing events.
   // Notification types per Google's RTDN spec:
   //   1 = RECOVERED      (canceled sub returned to active)
@@ -238,9 +250,8 @@ export async function handleGooglePlayNotification(
   //   6 = RENEWED (price change applied)
   //   7 = RESTARTED      (restarted after cancellation)
   // We intentionally do NOT write income for type 3 (CANCELED), 5 (ON_HOLD),
-  // 10 (PAUSED), 12 (REVOKED), 13 (EXPIRED) — those don't represent revenue.
-  // Refund events (type 12 REVOKED) should reverse income but that's a
-  // separate flow not implemented here yet.
+  // 10 (PAUSED), 13 (EXPIRED) — those don't represent revenue.
+  // Type 12 (REVOKED) is handled above as a refund.
   const REVENUE_EVENTS = new Set<number>([1, 2, 4, 6, 7]);
   if (REVENUE_EVENTS.has(notificationType) && amount > 0) {
     // latestOrderId is unique per renewal. Falls back to a notification
@@ -251,14 +262,22 @@ export async function handleGooglePlayNotification(
 
     try {
       const incId = generateId('inc');
+      const ccy = currency.toUpperCase();
+      // LED-33: USD-normalize for cross-currency aggregation.
+      const usd = await convertToUsdCents(env, amount, ccy, txnDate);
+      if (!usd && amount !== 0) {
+        console.warn(`[GP sync] FX miss: currency=${ccy} date=${txnDate} amount=${amount} — usd_amount_cents will be NULL`);
+      }
+
       await env.DB.prepare(
         `INSERT OR IGNORE INTO income_transactions
          (id, user_id, integration_id, source, source_transaction_id, amount, currency, net_amount,
-          transaction_date, description, product_name, metadata)
-         VALUES (?, ?, ?, 'google_play', ?, ?, ?, ?, ?, ?, ?, ?)`
+          transaction_date, description, product_name, metadata,
+          usd_amount_cents, fx_rate, fx_rate_date, status)
+         VALUES (?, ?, ?, 'google_play', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')`
       ).bind(
         incId, userId, integrationId, txnId,
-        amount, currency.toUpperCase(), amount,
+        amount, ccy, amount,
         txnDate,
         `Google Play: ${lineItem.productId}`,
         lineItem.productId,
@@ -267,12 +286,98 @@ export async function handleGooglePlayNotification(
           order_id: orderId,
           purchase_token: purchaseToken,
           subscription_state: sub.subscriptionState,
-        })
+        }),
+        usd?.usdCents ?? null,
+        usd?.rate ?? null,
+        usd?.rateDate ?? null
       ).run();
-      console.log(`[GP RTDN] Income written for user=${userId} amount=${amount} ${currency} order=${orderId} type=${notificationType}`);
+      console.log(`[GP RTDN] Income written for user=${userId} amount=${amount} ${ccy} order=${orderId} type=${notificationType}`);
     } catch (e) {
       console.error('[GP RTDN] Failed to write income row:', e);
     }
+  }
+}
+
+/**
+ * LED-37: write a negative income row for a Google Play REVOKED notification.
+ * Idempotent on synthesized `gp_refund_<orderId>`. Looks up the positive row
+ * by either latestOrderId or any source_transaction_id whose metadata
+ * references this purchase_token.
+ */
+async function writeGooglePlayRefundIncome(
+  env: Env,
+  userId: string,
+  integrationId: string,
+  purchaseToken: string,
+  latestOrderId: string | undefined,
+): Promise<void> {
+  // Find the most recent positive income row for this purchase token.
+  // Match by source_transaction_id (gp_<orderId>) or by purchase_token in metadata.
+  const positive = await env.DB.prepare(
+    `SELECT id, amount, currency, net_amount, usd_amount_cents, fx_rate, fx_rate_date,
+            product_name, description, source_transaction_id
+     FROM income_transactions
+     WHERE user_id = ? AND source = 'google_play'
+       AND amount > 0
+       AND (
+         source_transaction_id = ?
+         OR json_extract(metadata, '$.purchase_token') = ?
+       )
+     ORDER BY transaction_date DESC LIMIT 1`
+  ).bind(userId, `gp_${latestOrderId || ''}`, purchaseToken).first<{
+    id: string; amount: number; currency: string; net_amount: number;
+    usd_amount_cents: number | null; fx_rate: number | null; fx_rate_date: string | null;
+    product_name: string | null; description: string | null;
+    source_transaction_id: string;
+  }>();
+
+  const refundOrderKey = latestOrderId || purchaseToken;
+  const txnId = `gp_refund_${refundOrderKey}`;
+  const date = new Date().toISOString().slice(0, 10);
+  const id = generateId('inc');
+
+  if (positive) {
+    await env.DB.prepare(
+      `INSERT OR IGNORE INTO income_transactions
+       (id, user_id, integration_id, source, source_transaction_id, amount, currency, net_amount,
+        transaction_date, description, product_name, metadata,
+        usd_amount_cents, fx_rate, fx_rate_date, status)
+       VALUES (?, ?, ?, 'google_play', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'settled')`
+    ).bind(
+      id, userId, integrationId, txnId,
+      -positive.amount, positive.currency, -positive.net_amount,
+      date,
+      `Refund: ${positive.description || positive.product_name || 'Google Play purchase'}`,
+      positive.product_name,
+      JSON.stringify({
+        refund: true,
+        original_id: positive.id,
+        original_transaction_id: positive.source_transaction_id,
+        purchase_token: purchaseToken,
+        order_id: latestOrderId,
+      }),
+      positive.usd_amount_cents !== null && positive.usd_amount_cents !== undefined
+        ? -positive.usd_amount_cents : null,
+      positive.fx_rate, positive.fx_rate_date,
+    ).run();
+    console.log(`[GP refund] Wrote negative row ${id} for original=${positive.id} (${-positive.amount} ${positive.currency})`);
+  } else {
+    await env.DB.prepare(
+      `INSERT OR IGNORE INTO income_transactions
+       (id, user_id, integration_id, source, source_transaction_id, amount, currency, net_amount,
+        transaction_date, description, metadata, status)
+       VALUES (?, ?, ?, 'google_play', ?, 0, 'USD', 0, ?, ?, ?, 'settled')`
+    ).bind(
+      id, userId, integrationId, txnId, date,
+      `Google Play refund (no matching purchase row): ${refundOrderKey}`,
+      JSON.stringify({
+        refund: true,
+        orphan: true,
+        purchase_token: purchaseToken,
+        order_id: latestOrderId,
+      })
+    ).run();
+    console.warn(`[GP refund] Orphan refund for token=${purchaseToken} order=${latestOrderId} — no matching positive row`);
   }
 }
 

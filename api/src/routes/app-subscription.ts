@@ -402,6 +402,12 @@ export async function handleAppleNotificationWebhook(request: Request, env: Env)
         await env.DB.prepare(`
           UPDATE users SET subscription_tier = 'free', updated_at = datetime('now') WHERE id = ?
         `).bind(userId).run();
+
+        // LED-37: write a negative income row referencing the original
+        // transaction. We never UPDATE the positive row — keeping both rows
+        // preserves history and makes refund counts auditable. Apple's next
+        // payout will already be reduced by Apple to reflect this refund.
+        await writeAppleRefundIncome(env, userId, originalTransactionId, transactionId, revocationDate);
         break;
       }
 
@@ -423,5 +429,90 @@ export async function handleAppleNotificationWebhook(request: Request, env: Env)
     console.error('Apple notification webhook error:', e);
     // Always return 200 to prevent Apple retries on processing errors
     return new Response('OK', { status: 200 });
+  }
+}
+
+/**
+ * LED-37: write a refund income row in response to an Apple REFUND / REVOKE
+ * notification. Idempotent on the synthesized source_transaction_id.
+ *
+ * We look up the matching positive income row by original_transaction_id
+ * (the Apple sales report rows we wrote don't carry that ID, but ASSN-
+ * driven income rows do — see WL Pro purchase path). If we don't find a
+ * positive row, we still write a refund record so the refund event isn't
+ * lost; the UI can detect orphan refunds and flag them.
+ */
+async function writeAppleRefundIncome(
+  env: Env,
+  userId: string,
+  originalTransactionId: string,
+  refundTransactionId: string,
+  refundDate: string | null,
+): Promise<void> {
+  // Find any positive income row from Apple that references this txn.
+  // Apple's salesReports rows use synthetic IDs (apple_sales_<month>_<...>)
+  // that don't include originalTransactionId, so this query may miss them.
+  // We still write a negative row keyed on the refund txn id so future
+  // analyses can correlate via metadata.
+  const positive = await env.DB.prepare(
+    `SELECT id, integration_id, amount, currency, net_amount, usd_amount_cents,
+            fx_rate, fx_rate_date, product_name, description
+     FROM income_transactions
+     WHERE user_id = ? AND source = 'apple_app_store'
+       AND (source_transaction_id LIKE ? OR json_extract(metadata, '$.original_transaction_id') = ?)
+     ORDER BY transaction_date DESC LIMIT 1`
+  ).bind(userId, `%${originalTransactionId}%`, originalTransactionId).first<{
+    id: string; integration_id: string; amount: number; currency: string;
+    net_amount: number; usd_amount_cents: number | null;
+    fx_rate: number | null; fx_rate_date: string | null;
+    product_name: string | null; description: string | null;
+  }>();
+
+  const txnId = `apple_refund_${refundTransactionId || originalTransactionId}`;
+  const date = refundDate ? refundDate.slice(0, 10) : new Date().toISOString().slice(0, 10);
+  const id = generateId('inc');
+
+  if (positive) {
+    await env.DB.prepare(
+      `INSERT OR IGNORE INTO income_transactions
+       (id, user_id, integration_id, source, source_transaction_id, amount, currency, net_amount,
+        transaction_date, description, product_name, metadata,
+        usd_amount_cents, fx_rate, fx_rate_date, status)
+       VALUES (?, ?, ?, 'apple_app_store', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'settled')`
+    ).bind(
+      id, userId, positive.integration_id, txnId,
+      -positive.amount, positive.currency, -positive.net_amount,
+      date,
+      `Refund: ${positive.description || positive.product_name || 'Apple purchase'}`,
+      positive.product_name,
+      JSON.stringify({
+        refund: true,
+        original_id: positive.id,
+        original_transaction_id: originalTransactionId,
+        refund_transaction_id: refundTransactionId,
+      }),
+      positive.usd_amount_cents !== null && positive.usd_amount_cents !== undefined
+        ? -positive.usd_amount_cents : null,
+      positive.fx_rate, positive.fx_rate_date,
+    ).run();
+    console.log(`[Apple refund] Wrote negative row ${id} for original=${positive.id} (${-positive.amount} ${positive.currency})`);
+  } else {
+    // Orphan refund — no positive row found. Record it for visibility.
+    await env.DB.prepare(
+      `INSERT OR IGNORE INTO income_transactions
+       (id, user_id, integration_id, source, source_transaction_id, amount, currency, net_amount,
+        transaction_date, description, metadata, status)
+       VALUES (?, ?, NULL, 'apple_app_store', ?, 0, 'USD', 0, ?, ?, ?, 'settled')`
+    ).bind(
+      id, userId, txnId, date,
+      `Apple refund (no matching purchase row): ${originalTransactionId}`,
+      JSON.stringify({
+        refund: true,
+        orphan: true,
+        original_transaction_id: originalTransactionId,
+        refund_transaction_id: refundTransactionId,
+      })
+    ).run();
+    console.warn(`[Apple refund] Orphan refund for original=${originalTransactionId} — no matching positive row`);
   }
 }

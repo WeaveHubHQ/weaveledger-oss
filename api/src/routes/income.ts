@@ -208,6 +208,100 @@ export async function listIncomeTransactions(request: Request, env: Env, userId:
   });
 }
 
+// LED-33/34/35/36: payouts CRUD + dashboard summary for the new revenue
+// lifecycle. Powers the iOS Revenue page sections (Forecast / Awaiting
+// Payout / Recent Payouts / YTD Paid).
+
+export async function listPayouts(request: Request, env: Env, userId: string): Promise<Response> {
+  const url = new URL(request.url);
+  const status = url.searchParams.get('status'); // 'predicted' | 'paid' | 'all'
+
+  let query = `SELECT id, source, source_payout_id, status, amount_local_cents, currency,
+                      amount_usd_cents, fx_rate, period_start, period_end,
+                      predicted_date, paid_date, bank_reference, metadata, created_at, updated_at
+               FROM payouts WHERE user_id = ?`;
+  const params: (string | number)[] = [userId];
+  if (status && status !== 'all') {
+    query += ' AND status = ?';
+    params.push(status);
+  }
+  // Recent first: predicted by predicted_date, paid by paid_date, falling
+  // back to created_at when neither is set.
+  query += ` ORDER BY COALESCE(paid_date, predicted_date, created_at) DESC LIMIT 100`;
+
+  const results = await env.DB.prepare(query).bind(...params).all();
+  return success(results.results);
+}
+
+export async function markPayoutReceived(
+  request: Request, env: Env, userId: string, payoutId: string,
+): Promise<Response> {
+  const body = await request.json<{ paid_date?: string; bank_reference?: string }>()
+    .catch(() => ({} as { paid_date?: string; bank_reference?: string }));
+
+  const row = await env.DB.prepare(
+    `SELECT id, status FROM payouts WHERE id = ? AND user_id = ?`
+  ).bind(payoutId, userId).first<{ id: string; status: string }>();
+  if (!row) return error('Payout not found', 404);
+  if (row.status === 'paid') return error('Payout is already marked paid', 409);
+
+  const paidDate = body.paid_date || new Date().toISOString().slice(0, 10);
+  const bankRef = body.bank_reference || null;
+
+  await env.DB.prepare(
+    `UPDATE payouts
+     SET status = 'paid', paid_date = ?, bank_reference = ?, updated_at = datetime('now')
+     WHERE id = ?`
+  ).bind(paidDate, bankRef, payoutId).run();
+
+  // Cascade: mark all linked income_transactions as 'paid' too.
+  await env.DB.prepare(
+    `UPDATE income_transactions
+     SET status = 'paid', updated_at = datetime('now')
+     WHERE payout_id = ?`
+  ).bind(payoutId).run();
+
+  return success({ id: payoutId, status: 'paid', paid_date: paidDate, bank_reference: bankRef },
+    'Payout marked received.');
+}
+
+/**
+ * Dashboard tile summary: This Month Forecast / Awaiting Payout / YTD Paid.
+ * All amounts are in USD cents (using usd_amount_cents and amount_usd_cents
+ * from LED-33) so mixed-currency aggregation produces a meaningful number.
+ */
+export async function getIncomeDashboard(request: Request, env: Env, userId: string): Promise<Response> {
+  const now = new Date();
+  const ym = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, '0')}`;
+  const monthStart = `${ym}-01`;
+  const yearStart = `${now.getUTCFullYear()}-01-01`;
+
+  // This Month Forecast = pending income in current month (in USD).
+  const thisMonth = await env.DB.prepare(
+    `SELECT COALESCE(SUM(usd_amount_cents), 0) AS usd_cents, COUNT(*) AS rows
+     FROM income_transactions
+     WHERE user_id = ? AND status = 'pending' AND transaction_date >= ?`
+  ).bind(userId, monthStart).first<{ usd_cents: number; rows: number }>();
+
+  // Awaiting Payout = sum of predicted payouts' USD.
+  const awaiting = await env.DB.prepare(
+    `SELECT COALESCE(SUM(amount_usd_cents), 0) AS usd_cents, COUNT(*) AS payouts
+     FROM payouts WHERE user_id = ? AND status = 'predicted'`
+  ).bind(userId).first<{ usd_cents: number; payouts: number }>();
+
+  // YTD Paid = sum of paid payouts in current calendar year.
+  const ytdPaid = await env.DB.prepare(
+    `SELECT COALESCE(SUM(amount_usd_cents), 0) AS usd_cents, COUNT(*) AS payouts
+     FROM payouts WHERE user_id = ? AND status = 'paid' AND paid_date >= ?`
+  ).bind(userId, yearStart).first<{ usd_cents: number; payouts: number }>();
+
+  return success({
+    this_month_forecast: { usd_cents: thisMonth?.usd_cents || 0, rows: thisMonth?.rows || 0 },
+    awaiting_payout: { usd_cents: awaiting?.usd_cents || 0, payouts: awaiting?.payouts || 0 },
+    ytd_paid: { usd_cents: ytdPaid?.usd_cents || 0, payouts: ytdPaid?.payouts || 0 },
+  });
+}
+
 export async function getIncomeSummary(request: Request, env: Env, userId: string): Promise<Response> {
   const url = new URL(request.url);
   const dateFrom = url.searchParams.get('date_from');
@@ -218,19 +312,27 @@ export async function getIncomeSummary(request: Request, env: Env, userId: strin
   if (dateFrom) { dateFilter += ' AND transaction_date >= ?'; params.push(dateFrom); }
   if (dateTo) { dateFilter += ' AND transaction_date <= ?'; params.push(dateTo); }
 
+  // LED-33: aggregate in USD cents, not local cents. Summing across
+  // currencies in local units (e.g. JPY + EUR + ZAR + USD) produces fantasy
+  // numbers. `usd_amount_cents` is populated on insert (and backfilled by
+  // /api/admin/backfill-usd) so this is the only sane unified total.
   const overview = await env.DB.prepare(
-    `SELECT COUNT(*) as count, COALESCE(SUM(amount), 0) as total_cents, COALESCE(SUM(net_amount), 0) as net_cents, COALESCE(SUM(fee_amount), 0) as fee_cents
+    `SELECT COUNT(*) as count,
+            COALESCE(SUM(usd_amount_cents), 0) as total_cents,
+            COALESCE(SUM(usd_amount_cents), 0) as net_cents,
+            0 as fee_cents,
+            SUM(CASE WHEN usd_amount_cents IS NULL AND amount != 0 THEN 1 ELSE 0 END) as missing_usd_rows
      FROM income_transactions WHERE user_id = ?${dateFilter}`
   ).bind(...params).first();
 
   const bySource = await env.DB.prepare(
-    `SELECT source, COUNT(*) as count, COALESCE(SUM(amount), 0) as total_cents
+    `SELECT source, COUNT(*) as count, COALESCE(SUM(usd_amount_cents), 0) as total_cents
      FROM income_transactions WHERE user_id = ?${dateFilter}
      GROUP BY source ORDER BY total_cents DESC`
   ).bind(...params).all();
 
   const byMonth = await env.DB.prepare(
-    `SELECT strftime('%Y-%m', transaction_date) as month, COUNT(*) as count, COALESCE(SUM(amount), 0) as total_cents
+    `SELECT strftime('%Y-%m', transaction_date) as month, COUNT(*) as count, COALESCE(SUM(usd_amount_cents), 0) as total_cents
      FROM income_transactions WHERE user_id = ?${dateFilter}
      GROUP BY month ORDER BY month DESC LIMIT 12`
   ).bind(...params).all();

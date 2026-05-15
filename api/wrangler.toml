@@ -55,9 +55,15 @@ SUBSCRIPTION_ENFORCEMENT = "none"
 # For Google Play webhooks (optional):
 #   npx wrangler secret put GOOGLE_PLAY_WEBHOOK_SECRET
 
-# Cron trigger: sync all active integrations daily at 6 AM UTC
+# Cron triggers:
+#   "0 6 * * *"     — daily full sync (integrations, recurring expenses,
+#                     Apple finance-reports scan, auto-mark overdue
+#                     predicted payouts)
+#   "*/10 * * * *"  — every 10 min: stuck-receipt cleanup safety net
+#   "0 7 1 * *"     — monthly reconciliation: settle prior month + create
+#                     predicted payouts
 [triggers]
-crons = ["0 6 * * *"]
+crons = ["0 6 * * *", "*/10 * * * *", "0 7 1 * *"]
 
 # Upload size limit for receipt images (10 MB)
 [limits]
