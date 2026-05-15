@@ -133,9 +133,11 @@ async function syncIntegrationCore(
   }
 
   const status = result.errors.length > 0 ? 'partial' : 'success';
+  // LED-31: bumped from 500 -> 2000 so multi-month Apple sync errors aren't
+  // truncated mid-message. Column is TEXT so no schema change needed.
   await env.DB.prepare(
     "UPDATE integrations SET last_sync_at = datetime('now'), last_sync_status = ?, last_sync_error = ?, updated_at = datetime('now') WHERE id = ?"
-  ).bind(status, result.errors.length > 0 ? result.errors.join('; ').slice(0, 500) : null, integration.id).run();
+  ).bind(status, result.errors.length > 0 ? result.errors.join('; ').slice(0, 2000) : null, integration.id).run();
 
   return { synced: result.synced, errors: result.errors, status };
 }

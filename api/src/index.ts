@@ -1,7 +1,7 @@
 import { Env } from './types';
 import { authenticate, authenticateDownload, checkRateLimit, canAccessBook, requireSubscription } from './middleware/auth';
 import { deriveDownloadKey } from './utils/crypto';
-import { register, login, changePassword, getProfile, updatePreferences, getUserApiKey, mfaSetup, mfaEnable, mfaDisable, addLinkedEmail, removeLinkedEmail, listLinkedEmails, forgotPassword, resetPassword, refreshAuth } from './routes/auth';
+import { register, login, changePassword, getProfile, updatePreferences, getUserApiKey, mfaSetup, mfaEnable, mfaDisable, addLinkedEmail, removeLinkedEmail, listLinkedEmails, resendLinkedEmailVerification, verifyLinkedEmailLink, forgotPassword, resetPassword, refreshAuth } from './routes/auth';
 import { listBooks, createBook, getBook, updateBook, deleteBook, shareBook, revokeShare, listInvitations, revokeInvitation } from './routes/books';
 import { listReceipts, createReceipt, getReceipt, updateReceipt, deleteReceipt, uploadReceiptImage, getReceiptImage, getReceiptAttachment, retryReceipt, getBookSummary, cleanupStuckReceipts } from './routes/receipts';
 import { exportBook } from './services/export';
@@ -23,16 +23,14 @@ export { ReceiptProcessorWorkflow } from './workflows/receipt-processor';
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     // Handle CORS preflight — only respond with CORS headers for the allowed origin
-    const ALLOWED_ORIGIN = env.ALLOWED_ORIGIN || 'https://ledger.weavehub.app';
-
     if (request.method === 'OPTIONS') {
       const reqOrigin = request.headers.get('Origin') || '';
-      if (reqOrigin !== ALLOWED_ORIGIN) {
+      if (reqOrigin !== 'https://ledger.weavehub.app') {
         return new Response(null, { status: 204 });
       }
       return new Response(null, {
         headers: {
-          'Access-Control-Allow-Origin': ALLOWED_ORIGIN,
+          'Access-Control-Allow-Origin': 'https://ledger.weavehub.app',
           'Access-Control-Allow-Methods': 'GET, POST, PUT, PATCH, DELETE, OPTIONS',
           'Access-Control-Allow-Headers': 'Content-Type, Authorization',
           'Access-Control-Max-Age': '86400',
@@ -47,6 +45,7 @@ export default {
 
     // Add CORS headers only for allowed origins; omit entirely for unknown origins
     const origin = request.headers.get('Origin') || '';
+    const ALLOWED_ORIGIN = 'https://ledger.weavehub.app';
     const isAllowedOrigin = origin === ALLOWED_ORIGIN;
     const addCors = (response: Response): Response => {
       if (!isAllowedOrigin) return response;
@@ -111,6 +110,16 @@ export default {
         return privacyPolicyPage();
       }
 
+      // Linked-email magic-link verification (LED-26). Public — bearer auth
+      // IS the token. Path is under /api/ so Cloudflare Access's /api/*
+      // bypass rule allows unauth GETs from email clients to reach the worker.
+      // Rate-limited to blunt enumeration attempts.
+      if (path === '/api/verify-email' && method === 'GET') {
+        const limited = await checkRateLimit(request, env.DB, 20, 60_000);
+        if (limited) return addCors(limited);
+        return addCors(await verifyLinkedEmailLink(request, env));
+      }
+
       // Export via download token (no JWT in URL)
       const exportDlMatch = path.match(/^\/api\/books\/([^/]+)\/export\/(csv|json|pdf|qbo|ofx)$/);
       if (exportDlMatch && method === 'GET' && url.searchParams.has('dl_token')) {
@@ -168,6 +177,10 @@ export default {
       }
       if (path === '/api/auth/emails' && method === 'POST') {
         return addCors(await addLinkedEmail(request, env, userId));
+      }
+      const emailResendMatch = path.match(/^\/api\/auth\/emails\/([^/]+)\/resend$/);
+      if (emailResendMatch && method === 'POST') {
+        return addCors(await resendLinkedEmailVerification(request, env, userId, emailResendMatch[1]));
       }
       const emailDeleteMatch = path.match(/^\/api\/auth\/emails\/([^/]+)$/);
       if (emailDeleteMatch && method === 'DELETE') {
@@ -420,6 +433,15 @@ export default {
   },
 
   async scheduled(event: ScheduledEvent, env: Env, ctx: ExecutionContext): Promise<void> {
+    // The 10-minute cron only runs the stuck-receipt cleanup so a workflow that
+    // failed to write its terminal status is visible to users within ~25 minutes
+    // (15-min staleness window + cron cadence) instead of waiting for the daily sync.
+    if (event.cron === '*/10 * * * *') {
+      ctx.waitUntil(cleanupStuckReceipts(env));
+      return;
+    }
+    // Daily 06:00 UTC: full sync of integrations, recurring expenses, and a
+    // belt-and-suspenders cleanup pass.
     ctx.waitUntil(Promise.all([
       syncAllIntegrations(env),
       advanceRecurringExpenses(env),

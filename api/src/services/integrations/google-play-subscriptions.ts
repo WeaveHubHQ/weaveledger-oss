@@ -229,6 +229,51 @@ export async function handleGooglePlayNotification(
     canceledAt, cancelAt,
     JSON.stringify(sub)
   ).run();
+
+  // LED-31: write an income_transactions row for revenue-bearing events.
+  // Notification types per Google's RTDN spec:
+  //   1 = RECOVERED      (canceled sub returned to active)
+  //   2 = RENEWED        (auto-renewal succeeded)
+  //   4 = PURCHASED      (first-time subscription purchase)
+  //   6 = RENEWED (price change applied)
+  //   7 = RESTARTED      (restarted after cancellation)
+  // We intentionally do NOT write income for type 3 (CANCELED), 5 (ON_HOLD),
+  // 10 (PAUSED), 12 (REVOKED), 13 (EXPIRED) — those don't represent revenue.
+  // Refund events (type 12 REVOKED) should reverse income but that's a
+  // separate flow not implemented here yet.
+  const REVENUE_EVENTS = new Set<number>([1, 2, 4, 6, 7]);
+  if (REVENUE_EVENTS.has(notificationType) && amount > 0) {
+    // latestOrderId is unique per renewal. Falls back to a notification
+    // timestamp if Google didn't include it (rare for recurring subs).
+    const orderId = sub.latestOrderId || `${purchaseToken}_${notificationType}_${Date.now()}`;
+    const txnId = `gp_${orderId}`;
+    const txnDate = new Date().toISOString().split('T')[0];
+
+    try {
+      const incId = generateId('inc');
+      await env.DB.prepare(
+        `INSERT OR IGNORE INTO income_transactions
+         (id, user_id, integration_id, source, source_transaction_id, amount, currency, net_amount,
+          transaction_date, description, product_name, metadata)
+         VALUES (?, ?, ?, 'google_play', ?, ?, ?, ?, ?, ?, ?, ?)`
+      ).bind(
+        incId, userId, integrationId, txnId,
+        amount, currency.toUpperCase(), amount,
+        txnDate,
+        `Google Play: ${lineItem.productId}`,
+        lineItem.productId,
+        JSON.stringify({
+          notification_type: notificationType,
+          order_id: orderId,
+          purchase_token: purchaseToken,
+          subscription_state: sub.subscriptionState,
+        })
+      ).run();
+      console.log(`[GP RTDN] Income written for user=${userId} amount=${amount} ${currency} order=${orderId} type=${notificationType}`);
+    } catch (e) {
+      console.error('[GP RTDN] Failed to write income row:', e);
+    }
+  }
 }
 
 // Backfill: build subscription records from existing income_transactions.
