@@ -34,3 +34,17 @@ SET gross_amount = amount,
       ELSE NULL
     END
 WHERE source = 'stripe';
+
+-- For Apple/Google rows already in the table (pre-LED-39 schema), the legacy
+-- convention had amount = developer proceeds (net), which is the closest
+-- thing we have to "gross" until the next sync overwrites with real
+-- Customer Price / Charged Amount data. Bridge them so the By Source rollup
+-- and Monthly Revenue chart don't show $0 for these rows. Fee stays NULL
+-- until a real sync supplies it.
+UPDATE income_transactions
+SET gross_amount = amount,
+    gross_currency = currency,
+    usd_gross_cents = usd_amount_cents
+WHERE source IN ('apple_app_store', 'google_play')
+  AND usd_gross_cents IS NULL
+  AND usd_amount_cents IS NOT NULL;
