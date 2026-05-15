@@ -32,6 +32,10 @@ const COLUMN_ALIASES: Record<string, string[]> = {
   proceeds: ['Developer Proceeds', 'Extended Partner Share', 'Partner Share'],
   currency: ['Currency of Proceeds', 'Partner Share Currency'],
   countryCode: ['Country Code', 'Provider Country'],
+  // LED-39: gross customer price + their local currency so we can compute
+  // the actual platform fee instead of guessing a rate.
+  customerPrice: ['Customer Price'],
+  customerCurrency: ['Customer Currency'],
 };
 
 function pickColumn(cols: string[], colMap: Record<string, number>, aliases: string[]): string {
@@ -79,42 +83,87 @@ export async function syncAppleAppStore(
       for (const row of r.rows) {
         try {
           const id = generateId('inc');
-          const amount = Math.round(row.proceeds * 100);
-          const currency = row.currency.toUpperCase();
+          // LED-39: distinguish customer-paid (gross) from developer-proceeds (net).
+          //   - proceeds in `Currency of Proceeds` (often differs from buyer's)
+          //   - customer paid in `Customer Currency` (buyer's local currency)
+          // Fee in USD = USD-gross - USD-net.  Both legs go through FX so the
+          // sign and magnitude are correct even when currencies differ.
+          // row.proceeds and row.customerPrice are already totals (per-unit × units).
+          const netLocalCents = Math.round(row.proceeds * 100);
+          const netCurrency = row.currency.toUpperCase();
+          const grossLocalCents = row.customerPrice !== null
+            ? Math.round(row.customerPrice * 100)
+            : netLocalCents;
+          const grossCurrency = (row.customerCurrency || netCurrency).toUpperCase();
 
-          // LED-33: convert to USD on insert so the iOS Revenue page can
-          // aggregate across mixed currencies. Falls back to null if the
-          // FX helper can't get a rate (no fabricated rates).
-          const usd = await convertToUsdCents(env, amount, currency, row.startDate);
-          if (!usd && amount !== 0) {
-            console.warn(`[Apple sync] FX miss: currency=${currency} date=${row.startDate} amount=${amount} — usd_amount_cents will be NULL`);
+          const usdNet = await convertToUsdCents(env, netLocalCents, netCurrency, row.startDate);
+          const usdGross = grossCurrency === netCurrency && grossLocalCents === netLocalCents
+            ? usdNet
+            : await convertToUsdCents(env, grossLocalCents, grossCurrency, row.startDate);
+          if ((!usdNet || !usdGross) && netLocalCents !== 0) {
+            console.warn(`[Apple sync] FX miss: net=${netCurrency} gross=${grossCurrency} date=${row.startDate} — fee will be NULL`);
           }
+          const usdFeeCents = (usdGross && usdNet) ? Math.max(0, usdGross.usdCents - usdNet.usdCents) : null;
+          const localFeeCents = grossCurrency === netCurrency
+            ? Math.max(0, grossLocalCents - netLocalCents)
+            : null;
 
           // Idempotent across multiple syncs. The (month, product, country,
           // row-index) tuple uniquely identifies a sales line within a vendor.
           const txnId = `apple_sales_${r.reportDate}_${row.productId}_${row.countryCode || 'XX'}_${row.rowIndex}`;
+          // Use INSERT...ON CONFLICT so re-syncing a row written under the
+          // pre-LED-39 convention (amount=net) upgrades it in place to the
+          // new convention (amount=gross) — that's the backfill story for
+          // Apple. Older fields are overwritten with the new authoritative
+          // values; status/payout_id are preserved.
           await env.DB.prepare(
-            `INSERT OR IGNORE INTO income_transactions
-             (id, user_id, integration_id, source, source_transaction_id, amount, currency, net_amount,
+            `INSERT INTO income_transactions
+             (id, user_id, integration_id, source, source_transaction_id,
+              amount, currency, net_amount, fee_amount,
               transaction_date, description, product_name, metadata,
-              usd_amount_cents, fx_rate, fx_rate_date, status)
-             VALUES (?, ?, ?, 'apple_app_store', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')`
+              usd_amount_cents, fx_rate, fx_rate_date, status,
+              gross_amount, gross_currency, usd_gross_cents, usd_fee_cents)
+             VALUES (?, ?, ?, 'apple_app_store', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?)
+             ON CONFLICT(source, source_transaction_id) DO UPDATE SET
+               amount = excluded.amount,
+               currency = excluded.currency,
+               net_amount = excluded.net_amount,
+               fee_amount = excluded.fee_amount,
+               description = excluded.description,
+               product_name = excluded.product_name,
+               metadata = excluded.metadata,
+               usd_amount_cents = excluded.usd_amount_cents,
+               fx_rate = excluded.fx_rate,
+               fx_rate_date = excluded.fx_rate_date,
+               gross_amount = excluded.gross_amount,
+               gross_currency = excluded.gross_currency,
+               usd_gross_cents = excluded.usd_gross_cents,
+               usd_fee_cents = excluded.usd_fee_cents,
+               updated_at = datetime('now')`
           ).bind(
             id, userId, integrationId, txnId,
-            amount, currency, amount,
+            // amount = gross (LED-39 convention)
+            grossLocalCents, grossCurrency, netLocalCents, localFeeCents,
             row.startDate,
             `App Store: ${row.productName || row.productId}${row.countryCode ? ` (${row.countryCode})` : ''}`,
             row.productName || row.productId,
             JSON.stringify({
               units: row.units,
-              proceeds: row.proceeds,
+              proceeds_per_unit: row.proceeds,
+              customer_price_per_unit: row.customerPrice ?? null,
+              customer_currency: row.customerCurrency ?? null,
+              proceeds_currency: netCurrency,
               product_id: row.productId,
               country_code: row.countryCode,
               report_date: r.reportDate,
             }),
-            usd?.usdCents ?? null,
-            usd?.rate ?? null,
-            usd?.rateDate ?? null
+            // usd_amount_cents now means USD-gross (rename semantics, LED-39)
+            usdGross?.usdCents ?? null,
+            usdGross?.rate ?? null,
+            usdGross?.rateDate ?? null,
+            grossLocalCents, grossCurrency,
+            usdGross?.usdCents ?? null,
+            usdFeeCents,
           ).run();
           synced++;
         } catch (e) {
@@ -139,10 +188,12 @@ type SalesFetchResult =
         productId: string;
         productName: string;
         units: number;
-        proceeds: number;
+        proceeds: number;         // total proceeds (per-unit × units)
         currency: string;
         countryCode: string;
         rowIndex: number;
+        customerPrice: number | null;   // total customer price (per-unit × units)
+        customerCurrency: string | null;
       }>;
       skipped: number;
     }
@@ -218,6 +269,9 @@ async function fetchAndParseSalesReport(
     const proceedsPerUnit = parseFloat(pickColumn(cols, colMap, COLUMN_ALIASES.proceeds));
     const currency = pickColumn(cols, colMap, COLUMN_ALIASES.currency) || 'USD';
     const countryCode = pickColumn(cols, colMap, COLUMN_ALIASES.countryCode);
+    // LED-39: gross customer price (per unit) in the buyer's local currency.
+    const customerPricePerUnit = parseFloat(pickColumn(cols, colMap, COLUMN_ALIASES.customerPrice));
+    const customerCurrency = pickColumn(cols, colMap, COLUMN_ALIASES.customerCurrency);
 
     if (!Number.isFinite(units) || units <= 0 ||
         !Number.isFinite(proceedsPerUnit) || proceedsPerUnit <= 0) {
@@ -225,9 +279,12 @@ async function fetchAndParseSalesReport(
       continue;
     }
 
-    // Apple's SALES "Developer Proceeds" is PER UNIT. Total proceeds for the
-    // row = proceedsPerUnit × units.
+    // Apple's SALES "Developer Proceeds" and "Customer Price" are both PER UNIT.
+    // Total proceeds for the row = proceedsPerUnit × units; same for gross.
     const totalProceeds = proceedsPerUnit * units;
+    const totalCustomerPrice = Number.isFinite(customerPricePerUnit) && customerPricePerUnit > 0
+      ? customerPricePerUnit * units
+      : null;
 
     rows.push({
       startDate,
@@ -238,6 +295,8 @@ async function fetchAndParseSalesReport(
       currency,
       countryCode,
       rowIndex: i,
+      customerPrice: totalCustomerPrice,
+      customerCurrency: customerCurrency || null,
     });
   }
 

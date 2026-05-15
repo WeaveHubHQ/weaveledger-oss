@@ -276,29 +276,72 @@ export async function getIncomeDashboard(request: Request, env: Env, userId: str
   const monthStart = `${ym}-01`;
   const yearStart = `${now.getUTCFullYear()}-01-01`;
 
-  // This Month Forecast = pending income in current month (in USD).
+  // LED-39 (fees): each tile now exposes a gross/fee/net trio. usd_gross_cents
+  // is what the customer paid, usd_fee_cents is the platform commission,
+  // (usd_gross - usd_fee) is what the developer keeps. Income rows: net is
+  // tracked per-row. Payouts: net is the wire amount (commission already
+  // deducted upstream by Apple/Google), so net = amount_usd_cents and
+  // we don't have a separate fee field on payouts — we sum row-level fees
+  // for the linked income within the payout's period.
+
+  // This Month: pending income in the current month.
   const thisMonth = await env.DB.prepare(
-    `SELECT COALESCE(SUM(usd_amount_cents), 0) AS usd_cents, COUNT(*) AS rows
+    `SELECT COALESCE(SUM(usd_gross_cents), 0) AS gross_usd,
+            COALESCE(SUM(usd_fee_cents), 0)   AS fee_usd,
+            COUNT(*) AS rows
      FROM income_transactions
      WHERE user_id = ? AND status = 'pending' AND transaction_date >= ?`
-  ).bind(userId, monthStart).first<{ usd_cents: number; rows: number }>();
+  ).bind(userId, monthStart).first<{ gross_usd: number; fee_usd: number; rows: number }>();
 
-  // Awaiting Payout = sum of predicted payouts' USD.
+  // Awaiting Payout: predicted payouts' USD net, plus the fee implied by their
+  // linked income rows.
   const awaiting = await env.DB.prepare(
-    `SELECT COALESCE(SUM(amount_usd_cents), 0) AS usd_cents, COUNT(*) AS payouts
-     FROM payouts WHERE user_id = ? AND status = 'predicted'`
-  ).bind(userId).first<{ usd_cents: number; payouts: number }>();
+    `SELECT COALESCE(SUM(p.amount_usd_cents), 0) AS net_usd,
+            COUNT(p.id) AS payouts,
+            COALESCE((SELECT SUM(i.usd_fee_cents) FROM income_transactions i
+                      WHERE i.user_id = ? AND i.payout_id IN (
+                        SELECT id FROM payouts WHERE user_id = ? AND status = 'predicted'
+                      )), 0) AS fee_usd
+     FROM payouts p WHERE p.user_id = ? AND p.status = 'predicted'`
+  ).bind(userId, userId, userId).first<{ net_usd: number; payouts: number; fee_usd: number }>();
 
-  // YTD Paid = sum of paid payouts in current calendar year.
+  // YTD Paid: paid payouts this calendar year + linked income fees.
   const ytdPaid = await env.DB.prepare(
-    `SELECT COALESCE(SUM(amount_usd_cents), 0) AS usd_cents, COUNT(*) AS payouts
-     FROM payouts WHERE user_id = ? AND status = 'paid' AND paid_date >= ?`
-  ).bind(userId, yearStart).first<{ usd_cents: number; payouts: number }>();
+    `SELECT COALESCE(SUM(p.amount_usd_cents), 0) AS net_usd,
+            COUNT(p.id) AS payouts,
+            COALESCE((SELECT SUM(i.usd_fee_cents) FROM income_transactions i
+                      WHERE i.user_id = ? AND i.payout_id IN (
+                        SELECT id FROM payouts WHERE user_id = ? AND status = 'paid' AND paid_date >= ?
+                      )), 0) AS fee_usd
+     FROM payouts p WHERE p.user_id = ? AND p.status = 'paid' AND p.paid_date >= ?`
+  ).bind(userId, userId, yearStart, userId, yearStart).first<{ net_usd: number; payouts: number; fee_usd: number }>();
+
+  const grossOf = (net: number, fee: number) => net + fee;
 
   return success({
-    this_month_forecast: { usd_cents: thisMonth?.usd_cents || 0, rows: thisMonth?.rows || 0 },
-    awaiting_payout: { usd_cents: awaiting?.usd_cents || 0, payouts: awaiting?.payouts || 0 },
-    ytd_paid: { usd_cents: ytdPaid?.usd_cents || 0, payouts: ytdPaid?.payouts || 0 },
+    this_month_forecast: {
+      gross_usd_cents: thisMonth?.gross_usd || 0,
+      fee_usd_cents: thisMonth?.fee_usd || 0,
+      net_usd_cents: (thisMonth?.gross_usd || 0) - (thisMonth?.fee_usd || 0),
+      // Back-compat: existing iOS build expects `usd_cents` = "primary" total.
+      // Default to net so the headline number is what the developer keeps.
+      usd_cents: (thisMonth?.gross_usd || 0) - (thisMonth?.fee_usd || 0),
+      rows: thisMonth?.rows || 0,
+    },
+    awaiting_payout: {
+      net_usd_cents: awaiting?.net_usd || 0,
+      fee_usd_cents: awaiting?.fee_usd || 0,
+      gross_usd_cents: grossOf(awaiting?.net_usd || 0, awaiting?.fee_usd || 0),
+      usd_cents: awaiting?.net_usd || 0,
+      payouts: awaiting?.payouts || 0,
+    },
+    ytd_paid: {
+      net_usd_cents: ytdPaid?.net_usd || 0,
+      fee_usd_cents: ytdPaid?.fee_usd || 0,
+      gross_usd_cents: grossOf(ytdPaid?.net_usd || 0, ytdPaid?.fee_usd || 0),
+      usd_cents: ytdPaid?.net_usd || 0,
+      payouts: ytdPaid?.payouts || 0,
+    },
   });
 }
 
@@ -312,27 +355,35 @@ export async function getIncomeSummary(request: Request, env: Env, userId: strin
   if (dateFrom) { dateFilter += ' AND transaction_date >= ?'; params.push(dateFrom); }
   if (dateTo) { dateFilter += ' AND transaction_date <= ?'; params.push(dateTo); }
 
-  // LED-33: aggregate in USD cents, not local cents. Summing across
-  // currencies in local units (e.g. JPY + EUR + ZAR + USD) produces fantasy
-  // numbers. `usd_amount_cents` is populated on insert (and backfilled by
-  // /api/admin/backfill-usd) so this is the only sane unified total.
+  // LED-39 (fees): expose gross + fee + net totals so the web Revenue page
+  // can show three numbers instead of one ambiguous "total". Continue to
+  // populate `total_cents` (= gross) for backwards compatibility.
   const overview = await env.DB.prepare(
     `SELECT COUNT(*) as count,
-            COALESCE(SUM(usd_amount_cents), 0) as total_cents,
-            COALESCE(SUM(usd_amount_cents), 0) as net_cents,
-            0 as fee_cents,
-            SUM(CASE WHEN usd_amount_cents IS NULL AND amount != 0 THEN 1 ELSE 0 END) as missing_usd_rows
+            COALESCE(SUM(usd_gross_cents), 0) as total_cents,
+            COALESCE(SUM(usd_gross_cents), 0) as gross_cents,
+            COALESCE(SUM(usd_fee_cents), 0)   as fee_cents,
+            COALESCE(SUM(usd_gross_cents - COALESCE(usd_fee_cents, 0)), 0) as net_cents,
+            SUM(CASE WHEN usd_gross_cents IS NULL AND amount != 0 THEN 1 ELSE 0 END) as missing_usd_rows
      FROM income_transactions WHERE user_id = ?${dateFilter}`
   ).bind(...params).first();
 
   const bySource = await env.DB.prepare(
-    `SELECT source, COUNT(*) as count, COALESCE(SUM(usd_amount_cents), 0) as total_cents
+    `SELECT source, COUNT(*) as count,
+            COALESCE(SUM(usd_gross_cents), 0) as total_cents,
+            COALESCE(SUM(usd_gross_cents), 0) as gross_cents,
+            COALESCE(SUM(usd_fee_cents), 0)   as fee_cents,
+            COALESCE(SUM(usd_gross_cents - COALESCE(usd_fee_cents, 0)), 0) as net_cents
      FROM income_transactions WHERE user_id = ?${dateFilter}
      GROUP BY source ORDER BY total_cents DESC`
   ).bind(...params).all();
 
   const byMonth = await env.DB.prepare(
-    `SELECT strftime('%Y-%m', transaction_date) as month, COUNT(*) as count, COALESCE(SUM(usd_amount_cents), 0) as total_cents
+    `SELECT strftime('%Y-%m', transaction_date) as month, COUNT(*) as count,
+            COALESCE(SUM(usd_gross_cents), 0) as total_cents,
+            COALESCE(SUM(usd_gross_cents), 0) as gross_cents,
+            COALESCE(SUM(usd_fee_cents), 0)   as fee_cents,
+            COALESCE(SUM(usd_gross_cents - COALESCE(usd_fee_cents, 0)), 0) as net_cents
      FROM income_transactions WHERE user_id = ?${dateFilter}
      GROUP BY month ORDER BY month DESC LIMIT 12`
   ).bind(...params).all();
