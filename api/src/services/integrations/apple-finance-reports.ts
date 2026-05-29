@@ -2,6 +2,7 @@ import { Env } from '../../types';
 import { generateId } from '../../utils/crypto';
 import { getAppleJWT } from '../../utils/apple-jws';
 import { convertToUsdCents } from '../../utils/fx';
+import { toMinorUnits } from '../../utils/currency';
 
 interface AppleCredentials {
   issuer_id: string;
@@ -242,7 +243,8 @@ async function upsertPayoutFromFinanceReport(
   let totalUnits = 0;
   for (const r of rows) {
     const ccy = (r.partnerShareCurrency || 'USD').toUpperCase();
-    const localCents = Math.round(r.extendedPartnerShare * 100);
+    // LED-40: honor ISO 4217 minor-unit exponent per currency.
+    const localCents = toMinorUnits(r.extendedPartnerShare, ccy);
     byCurrency[ccy] = (byCurrency[ccy] || 0) + localCents;
     totalUnits += r.units || 0;
   }

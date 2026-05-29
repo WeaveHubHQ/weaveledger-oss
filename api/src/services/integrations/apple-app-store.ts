@@ -2,6 +2,7 @@ import { Env } from '../../types';
 import { generateId } from '../../utils/crypto';
 import { getAppleJWT } from '../../utils/apple-jws';
 import { convertToUsdCents } from '../../utils/fx';
+import { toMinorUnits } from '../../utils/currency';
 
 interface AppleCredentials {
   issuer_id: string;
@@ -89,12 +90,13 @@ export async function syncAppleAppStore(
           // Fee in USD = USD-gross - USD-net.  Both legs go through FX so the
           // sign and magnitude are correct even when currencies differ.
           // row.proceeds and row.customerPrice are already totals (per-unit × units).
-          const netLocalCents = Math.round(row.proceeds * 100);
           const netCurrency = row.currency.toUpperCase();
-          const grossLocalCents = row.customerPrice !== null
-            ? Math.round(row.customerPrice * 100)
-            : netLocalCents;
           const grossCurrency = (row.customerCurrency || netCurrency).toUpperCase();
+          // LED-40: honor ISO 4217 minor-unit exponent. ¥500 → 500, not 50000.
+          const netLocalCents = toMinorUnits(row.proceeds, netCurrency);
+          const grossLocalCents = row.customerPrice !== null
+            ? toMinorUnits(row.customerPrice, grossCurrency)
+            : netLocalCents;
 
           const usdNet = await convertToUsdCents(env, netLocalCents, netCurrency, row.startDate);
           const usdGross = grossCurrency === netCurrency && grossLocalCents === netLocalCents

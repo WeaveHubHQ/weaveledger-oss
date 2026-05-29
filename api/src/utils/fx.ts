@@ -1,5 +1,6 @@
 import { Env } from '../types';
 import { generateId } from './crypto';
+import { minorUnitFactor } from './currency';
 
 /**
  * LED-33 — Currency conversion helper.
@@ -106,22 +107,34 @@ export async function getFxRate(
 }
 
 /**
- * Convert a local-currency cents amount to USD cents using the FX helper.
- * Returns `{ usdCents, rate, rateDate }` or null if no rate available.
+ * Convert a local-currency minor-unit amount to USD cents using the FX
+ * helper. Returns `{ usdCents, rate, rateDate }` or null if no rate
+ * available.
+ *
+ * LED-40 — `localMinorUnits` is in the source currency's true minor units
+ * per ISO 4217 (¥500 = 500, $2.99 = 299, JD2.500 = 2500). The FX rate is
+ * major-to-major (1 source = X USD), so we normalize through major units
+ * to USD cents using `minorUnitFactor(currency)`. This is correct for
+ * zero-decimal currencies (JPY, KRW, …) where the previous "multiply by
+ * the rate directly" formula undershot by 100×.
  *
  * Caller is responsible for storing rate + rateDate alongside the row for
  * audit; `null` means "we couldn't convert, store local amount only".
  */
 export async function convertToUsdCents(
   env: Env,
-  localCents: number,
+  localMinorUnits: number,
   fromCurrency: string,
   date?: string,
 ): Promise<{ usdCents: number; rate: number; rateDate: string; source: string } | null> {
   const rate = await getFxRate(env, fromCurrency, 'USD', date);
   if (!rate) return null;
+  const sourceFactor = minorUnitFactor(fromCurrency);
+  // major-to-major, then back to USD cents (factor 100).
+  const localMajor = localMinorUnits / sourceFactor;
+  const usdMajor = localMajor * rate.rate;
   return {
-    usdCents: Math.round(localCents * rate.rate),
+    usdCents: Math.round(usdMajor * 100),
     rate: rate.rate,
     rateDate: rate.rateDate,
     source: rate.source,

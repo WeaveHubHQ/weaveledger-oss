@@ -68,9 +68,13 @@ export async function getProfitAndLoss(request: Request, env: Env, userId: strin
   let totalExpenses = 0;
 
   for (const bucket of buckets) {
-    // Revenue from income_transactions (amount is in cents)
+    // LED-40: revenue must be USD-normalized. `amount` is in local minor
+    // units of the source currency, so summing it across mixed currencies
+    // produces meaningless numbers (¥500 + €2.99 = 50299 "cents" ≠ $3.46 +
+    // $3.15). Prefer usd_gross_cents (Apple/Google post-LED-39); fall back
+    // to usd_amount_cents for sources that don't populate gross (Stripe).
     const revenueResult = await env.DB.prepare(
-      `SELECT COALESCE(SUM(amount), 0) as total
+      `SELECT COALESCE(SUM(COALESCE(usd_gross_cents, usd_amount_cents)), 0) as total
        FROM income_transactions
        WHERE user_id = ? AND transaction_date >= ? AND transaction_date <= ?`
     ).bind(userId, bucket.startDate, bucket.endDate).first<{ total: number }>();

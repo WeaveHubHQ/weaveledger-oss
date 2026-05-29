@@ -126,6 +126,12 @@ export async function reconcileOneSource(
   // periods we use USD as the local currency, since the user will receive a
   // single USD wire from the provider (Apple/Google convert to the user's
   // bank currency at payout time and we don't know that currency a priori).
+  //
+  // LED-40: `amount_local_cents` is the source currency's minor-unit count
+  // per ISO 4217 — that is ¥500 for ¥500, not 50000. For zero-decimal
+  // currencies the column name is a historical misnomer but the value is
+  // correct because we now write `income_transactions.amount` in true
+  // minor units.
   const currencies = Object.keys(byCurrency);
   const localCurrency = currencies.length === 1 ? currencies[0] : 'USD';
   const localAmountCents = localCurrency === 'USD'
