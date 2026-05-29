@@ -144,9 +144,12 @@ export async function getTaxEstimates(request: Request, env: Env, userId: string
     };
   }
 
-  // YTD income from income_transactions (amount is in cents)
+  // LED-40: YTD income must be USD-normalized. `amount` is in local minor
+  // units; summing across mixed currencies is meaningless. Prefer
+  // usd_gross_cents (Apple/Google post-LED-39); fall back to
+  // usd_amount_cents for sources that don't populate gross (Stripe).
   const incomeResult = await env.DB.prepare(
-    `SELECT COALESCE(SUM(amount), 0) as total_income
+    `SELECT COALESCE(SUM(COALESCE(usd_gross_cents, usd_amount_cents)), 0) as total_income
      FROM income_transactions
      WHERE user_id = ? AND transaction_date >= ? AND transaction_date <= ?`
   ).bind(userId, startDate, endDate).first<{ total_income: number }>();

@@ -1,6 +1,7 @@
 import { Env } from '../../types';
 import { generateId } from '../../utils/crypto';
 import { convertToUsdCents } from '../../utils/fx';
+import { toMinorUnits } from '../../utils/currency';
 
 /**
  * LED-39 (fees): Google Play earnings reports sync.
@@ -310,10 +311,12 @@ async function applyEarningsCsv(
     const feeMerchant = parseAmount(get(cols, aliases.feeMerchantAmount)) ?? 0;
 
     // Sign: refunds appear as negative amounts in earnings; preserve sign.
+    // LED-40: honor ISO 4217 minor-unit exponent per currency. Zero-decimal
+    // currencies (JPY, KRW, …) stay as-is; 2-decimal multiplies by 100.
     const sign = isRefund ? (grossBuyer >= 0 ? -1 : 1) : 1;
-    const grossBuyerCents = Math.round(Math.abs(grossBuyer) * 100) * sign;
-    const grossMerchantCents = Math.round(Math.abs(grossMerchant) * 100) * sign;
-    const feeMerchantCents = Math.round(Math.abs(feeMerchant) * 100) * sign;
+    const grossBuyerCents = toMinorUnits(Math.abs(grossBuyer), buyerCurrency) * sign;
+    const grossMerchantCents = toMinorUnits(Math.abs(grossMerchant), merchantCurrency) * sign;
+    const feeMerchantCents = toMinorUnits(Math.abs(feeMerchant), merchantCurrency) * sign;
     const netMerchantCents = grossMerchantCents - feeMerchantCents;
 
     const txnDate = parseDate(get(cols, aliases.transactionDate)) || `${yearMonth.slice(0, 4)}-${yearMonth.slice(4, 6)}-01`;

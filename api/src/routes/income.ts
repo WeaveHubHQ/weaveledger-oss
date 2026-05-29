@@ -285,9 +285,20 @@ export async function getIncomeDashboard(request: Request, env: Env, userId: str
   // for the linked income within the payout's period.
 
   // This Month: pending income in the current month.
+  // LED-40: Stripe rows populate usd_amount_cents (net) but not
+  // usd_gross_cents (Stripe doesn't expose gross/fee separately at the
+  // balance_transaction level), so coalesce so Stripe revenue is visible.
+  // For Apple/Google, usd_gross_cents is populated and wins.
+  //
+  // Fee accounting: legacy Stripe rows touched by migration 0021 have
+  // usd_gross_cents = usd_amount_cents (= net, not real gross) AND a
+  // derived usd_fee_cents — subtracting that fee would undercount net.
+  // We therefore exclude Stripe entirely from fee aggregation until/unless
+  // a real gross backfill lands. For Apple/Google, usd_fee_cents is the
+  // true platform commission and is counted.
   const thisMonth = await env.DB.prepare(
-    `SELECT COALESCE(SUM(usd_gross_cents), 0) AS gross_usd,
-            COALESCE(SUM(usd_fee_cents), 0)   AS fee_usd,
+    `SELECT COALESCE(SUM(COALESCE(usd_gross_cents, usd_amount_cents)), 0) AS gross_usd,
+            COALESCE(SUM(CASE WHEN usd_gross_cents IS NOT NULL AND source != 'stripe' THEN COALESCE(usd_fee_cents, 0) ELSE 0 END), 0) AS fee_usd,
             COUNT(*) AS rows
      FROM income_transactions
      WHERE user_id = ? AND status = 'pending' AND transaction_date >= ?`
@@ -358,32 +369,46 @@ export async function getIncomeSummary(request: Request, env: Env, userId: strin
   // LED-39 (fees): expose gross + fee + net totals so the web Revenue page
   // can show three numbers instead of one ambiguous "total". Continue to
   // populate `total_cents` (= gross) for backwards compatibility.
+  //
+  // LED-40: Stripe rows populate usd_amount_cents (net) but not
+  // usd_gross_cents, so `gross_cents` coalesces to include them; `net_cents`
+  // subtracts whatever fee was captured (zero for Stripe). The
+  // missing-USD heuristic also accepts usd_amount_cents as a "we have USD"
+  // signal so Stripe rows aren't flagged.
+  // LED-40: when usd_gross_cents IS NULL we fall back to usd_amount_cents
+  // (Stripe path: usd_amount_cents = net). In that fallback we must NOT
+  // also subtract usd_fee_cents — net is already net. Guard fee with a
+  // CASE that only credits fee when gross is authoritative AND not Stripe:
+  // migration 0021 set legacy Stripe rows' usd_gross_cents = usd_amount_cents
+  // (= net) and derived a usd_fee_cents from amount/fee proportion. Both
+  // are misleading for fee accounting, so we exclude source='stripe' from
+  // the fee aggregation until a real Stripe gross backfill lands.
   const overview = await env.DB.prepare(
     `SELECT COUNT(*) as count,
-            COALESCE(SUM(usd_gross_cents), 0) as total_cents,
-            COALESCE(SUM(usd_gross_cents), 0) as gross_cents,
-            COALESCE(SUM(usd_fee_cents), 0)   as fee_cents,
-            COALESCE(SUM(usd_gross_cents - COALESCE(usd_fee_cents, 0)), 0) as net_cents,
-            SUM(CASE WHEN usd_gross_cents IS NULL AND amount != 0 THEN 1 ELSE 0 END) as missing_usd_rows
+            COALESCE(SUM(COALESCE(usd_gross_cents, usd_amount_cents)), 0) as total_cents,
+            COALESCE(SUM(COALESCE(usd_gross_cents, usd_amount_cents)), 0) as gross_cents,
+            COALESCE(SUM(CASE WHEN usd_gross_cents IS NOT NULL AND source != 'stripe' THEN COALESCE(usd_fee_cents, 0) ELSE 0 END), 0) as fee_cents,
+            COALESCE(SUM(COALESCE(usd_gross_cents, usd_amount_cents) - CASE WHEN usd_gross_cents IS NOT NULL AND source != 'stripe' THEN COALESCE(usd_fee_cents, 0) ELSE 0 END), 0) as net_cents,
+            SUM(CASE WHEN usd_gross_cents IS NULL AND usd_amount_cents IS NULL AND amount != 0 THEN 1 ELSE 0 END) as missing_usd_rows
      FROM income_transactions WHERE user_id = ?${dateFilter}`
   ).bind(...params).first();
 
   const bySource = await env.DB.prepare(
     `SELECT source, COUNT(*) as count,
-            COALESCE(SUM(usd_gross_cents), 0) as total_cents,
-            COALESCE(SUM(usd_gross_cents), 0) as gross_cents,
-            COALESCE(SUM(usd_fee_cents), 0)   as fee_cents,
-            COALESCE(SUM(usd_gross_cents - COALESCE(usd_fee_cents, 0)), 0) as net_cents
+            COALESCE(SUM(COALESCE(usd_gross_cents, usd_amount_cents)), 0) as total_cents,
+            COALESCE(SUM(COALESCE(usd_gross_cents, usd_amount_cents)), 0) as gross_cents,
+            COALESCE(SUM(CASE WHEN usd_gross_cents IS NOT NULL AND source != 'stripe' THEN COALESCE(usd_fee_cents, 0) ELSE 0 END), 0) as fee_cents,
+            COALESCE(SUM(COALESCE(usd_gross_cents, usd_amount_cents) - CASE WHEN usd_gross_cents IS NOT NULL AND source != 'stripe' THEN COALESCE(usd_fee_cents, 0) ELSE 0 END), 0) as net_cents
      FROM income_transactions WHERE user_id = ?${dateFilter}
      GROUP BY source ORDER BY total_cents DESC`
   ).bind(...params).all();
 
   const byMonth = await env.DB.prepare(
     `SELECT strftime('%Y-%m', transaction_date) as month, COUNT(*) as count,
-            COALESCE(SUM(usd_gross_cents), 0) as total_cents,
-            COALESCE(SUM(usd_gross_cents), 0) as gross_cents,
-            COALESCE(SUM(usd_fee_cents), 0)   as fee_cents,
-            COALESCE(SUM(usd_gross_cents - COALESCE(usd_fee_cents, 0)), 0) as net_cents
+            COALESCE(SUM(COALESCE(usd_gross_cents, usd_amount_cents)), 0) as total_cents,
+            COALESCE(SUM(COALESCE(usd_gross_cents, usd_amount_cents)), 0) as gross_cents,
+            COALESCE(SUM(CASE WHEN usd_gross_cents IS NOT NULL AND source != 'stripe' THEN COALESCE(usd_fee_cents, 0) ELSE 0 END), 0) as fee_cents,
+            COALESCE(SUM(COALESCE(usd_gross_cents, usd_amount_cents) - CASE WHEN usd_gross_cents IS NOT NULL AND source != 'stripe' THEN COALESCE(usd_fee_cents, 0) ELSE 0 END), 0) as net_cents
      FROM income_transactions WHERE user_id = ?${dateFilter}
      GROUP BY month ORDER BY month DESC LIMIT 12`
   ).bind(...params).all();

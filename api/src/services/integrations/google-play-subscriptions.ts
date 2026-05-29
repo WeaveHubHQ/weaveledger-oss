@@ -1,6 +1,7 @@
 import { Env } from '../../types';
 import { generateId } from '../../utils/crypto';
 import { convertToUsdCents } from '../../utils/fx';
+import { minorUnitFactor } from '../../utils/currency';
 
 interface GooglePlayCredentials {
   client_email: string;
@@ -148,7 +149,12 @@ export async function handleGooglePlayNotification(
   // Price: use priceChangeDetails if available, otherwise look up from catalog
   let priceMicros = lineItem.autoRenewingPlan?.priceChangeDetails?.newPrice?.priceMicros;
   let currency = lineItem.autoRenewingPlan?.priceChangeDetails?.newPrice?.currencyCode || 'USD';
-  let amount = priceMicros ? Math.round(parseInt(priceMicros) / 10000) : 0; // micros to cents
+  // LED-40: micros are always 1e6 per major unit. Convert to the currency's
+  // actual minor-unit count: USD/EUR factor 100 → micros/10000;
+  // JPY/KRW factor 1 → micros/1_000_000; BHD factor 1000 → micros/1000.
+  let amount = priceMicros
+    ? Math.round(parseInt(priceMicros) / (1_000_000 / minorUnitFactor(currency)))
+    : 0;
 
   // If no price from subscription response, look up from the product catalog
   if (amount === 0) {
@@ -175,8 +181,10 @@ export async function handleGooglePlayNotification(
           if (usdConfig) {
             const units = parseInt(usdConfig.price.units || '0');
             const nanos = usdConfig.price.nanos || 0;
-            amount = units * 100 + Math.round(nanos / 10_000_000);
             currency = usdConfig.price.currencyCode || 'USD';
+            // LED-40: minor-unit count = units * factor + (nanos / 1e9) * factor.
+            const factor = minorUnitFactor(currency);
+            amount = units * factor + Math.round(nanos / (1_000_000_000 / factor));
           }
         }
       }
