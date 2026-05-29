@@ -1,5 +1,6 @@
 import { Env } from '../../types';
 import { generateId } from '../../utils/crypto';
+import { convertToUsdCents } from '../../utils/fx';
 
 interface StripeSubscription {
   id: string;
@@ -85,15 +86,34 @@ export async function syncStripeSubscriptions(
 
       try {
         const id = generateId('sub');
+        // LED-41: Stripe `amount` is source minor units (Stripe API native).
+        // Compute USD-normalized value at insert so forecasting can sum
+        // across mixed-currency Stripe subs without per-row FX at read time.
+        const ccyUpper = price.currency.toUpperCase();
+        const usd = amount > 0
+          ? await convertToUsdCents(env, amount, ccyUpper, toISO(sub.start_date))
+          : null;
+        const amountUsdCents = amount === 0 ? 0 : usd?.usdCents ?? null;
+        if (amount > 0 && amountUsdCents === null) {
+          console.warn(`[Stripe sub] FX miss for subscription amount: currency=${ccyUpper} sub=${sub.id} — amount_usd_cents will be NULL`);
+        }
+
         const result = await env.DB.prepare(
           `INSERT INTO subscriptions
            (id, user_id, integration_id, source, source_subscription_id, product_id, product_name,
-            plan_interval, plan_interval_count, amount, currency, status, started_at,
+            plan_interval, plan_interval_count, amount, amount_usd_cents, currency, status, started_at,
             trial_end_at, current_period_start, current_period_end, canceled_at, cancel_at, customer_id, metadata)
-           VALUES (?, ?, ?, 'stripe', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           VALUES (?, ?, ?, 'stripe', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
            ON CONFLICT(source, source_subscription_id) DO UPDATE SET
              status = excluded.status,
              amount = excluded.amount,
+             -- LED-41: only overwrite amount_usd_cents when FX produced a
+             -- real value. A transient FX miss must not silently drop a
+             -- paid Stripe sub out of MRR/ARR.
+             amount_usd_cents = COALESCE(excluded.amount_usd_cents, subscriptions.amount_usd_cents),
+             -- LED-41: keep currency synced with amount so the row never
+             -- ends up with a new amount tagged in an old currency code.
+             currency = excluded.currency,
              current_period_start = excluded.current_period_start,
              current_period_end = excluded.current_period_end,
              canceled_at = excluded.canceled_at,
@@ -104,7 +124,7 @@ export async function syncStripeSubscriptions(
           id, userId, integrationId, sub.id,
           price.id, productName || null,
           price.recurring.interval, price.recurring.interval_count,
-          amount, price.currency.toUpperCase(),
+          amount, amountUsdCents, ccyUpper,
           status, toISO(sub.start_date),
           sub.trial_end ? toISO(sub.trial_end) : null,
           toISO(sub.current_period_start), toISO(sub.current_period_end),

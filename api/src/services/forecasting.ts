@@ -1,7 +1,10 @@
 import { Env } from '../types';
 
 interface Subscription {
-  amount: number;
+  // LED-41: forecasting only ever wants the USD-cents view. The legacy
+  // `amount` column has three different importer conventions; read
+  // `amount_usd_cents` instead.
+  amount_usd_cents: number;
   currency: string;
   plan_interval: string;
   plan_interval_count: number;
@@ -74,7 +77,7 @@ export async function computeForecast(
   env: Env, userId: string, months: number
 ): Promise<{ periods: ForecastPeriod[]; mrr_cents: number; arr_cents: number }> {
   const subs = await env.DB.prepare(
-    `SELECT amount, currency, plan_interval, plan_interval_count,
+    `SELECT amount_usd_cents, currency, plan_interval, plan_interval_count,
             current_period_end, trial_end_at, cancel_at, status
      FROM subscriptions
      WHERE user_id = ? AND status IN ('active', 'trialing', 'past_due')
@@ -89,7 +92,9 @@ export async function computeForecast(
   for (const sub of subs.results) {
     if (sub.status === 'trialing' && sub.trial_end_at && sub.trial_end_at > today) continue;
     if (sub.cancel_at && sub.cancel_at <= today) continue;
-    mrrCents += normalizeToMonthlyCents(sub.amount, sub.plan_interval, sub.plan_interval_count);
+    // LED-41: amount_usd_cents is USD-normalized at insert by importers; safe
+    // to sum across rows with different source currencies.
+    mrrCents += normalizeToMonthlyCents(sub.amount_usd_cents, sub.plan_interval, sub.plan_interval_count);
   }
 
   // Generate month-by-month forecast
@@ -116,7 +121,9 @@ export async function computeForecast(
       const renewals = getRenewalsInMonth(periodEnd, sub.plan_interval, sub.plan_interval_count, monthStart, monthEnd);
 
       if (renewals > 0) {
-        revenue += sub.amount * renewals;
+        // LED-41: revenue is USD cents, summed across heterogeneous source
+        // currencies via the importer-normalized column.
+        revenue += sub.amount_usd_cents * renewals;
         subCount++;
         totalRenewals += renewals;
       }
@@ -134,8 +141,9 @@ export async function computeForecast(
 }
 
 export async function computeSubscriptionSummary(env: Env, userId: string) {
+  // LED-41: total_cents is USD cents from the per-importer-normalized column.
   const active = await env.DB.prepare(
-    `SELECT COUNT(*) as count, COALESCE(SUM(amount), 0) as total_cents,
+    `SELECT COUNT(*) as count, COALESCE(SUM(amount_usd_cents), 0) as total_cents,
             source, plan_interval, plan_interval_count
      FROM subscriptions WHERE user_id = ? AND status IN ('active', 'trialing')
      GROUP BY source`
@@ -152,15 +160,15 @@ export async function computeSubscriptionSummary(env: Env, userId: string) {
 
   // Need individual subs for proper MRR calculation
   const allActive = await env.DB.prepare(
-    `SELECT amount, plan_interval, plan_interval_count, source
+    `SELECT amount_usd_cents, plan_interval, plan_interval_count, source
      FROM subscriptions WHERE user_id = ? AND status IN ('active', 'trialing')`
-  ).bind(userId).all<{ amount: number; plan_interval: string; plan_interval_count: number; source: string }>();
+  ).bind(userId).all<{ amount_usd_cents: number; plan_interval: string; plan_interval_count: number; source: string }>();
 
   const sourceMap = new Map<string, { count: number; mrr: number }>();
 
   for (const sub of allActive.results) {
     activeCount++;
-    const monthly = normalizeToMonthlyCents(sub.amount, sub.plan_interval, sub.plan_interval_count);
+    const monthly = normalizeToMonthlyCents(sub.amount_usd_cents, sub.plan_interval, sub.plan_interval_count);
     mrrCents += monthly;
 
     const existing = sourceMap.get(sub.source) || { count: 0, mrr: 0 };
