@@ -225,16 +225,17 @@ export async function syncAppleSubscriptions(
           ).bind(sourceSubId).first<{ id: string }>();
 
           if (existing) {
-            // Update existing subscription
+            // Update existing subscription. LED-41: amount and amount_usd_cents
+            // are the same value here because this importer normalizes upfront.
             await env.DB.prepare(
               `UPDATE subscriptions SET
-                amount = ?, currency = 'USD', status = ?,
+                amount = ?, amount_usd_cents = ?, currency = 'USD', status = ?,
                 current_period_start = ?, current_period_end = ?,
                 product_name = ?, plan_interval = ?, plan_interval_count = ?,
                 metadata = ?, updated_at = datetime('now')
               WHERE id = ?`
             ).bind(
-              amountCents, status,
+              amountCents, amountCents, status,
               periodStart, periodEnd,
               productName, interval, count,
               JSON.stringify({ subscriber_id: subscriberId, country, device, app_name: appName, app_apple_id: appAppleId, customer_price: customerPrice, customer_currency: customerCurrency, original_proceeds: developerProceeds, original_currency: proceedsCurrency }),
@@ -248,14 +249,14 @@ export async function syncAppleSubscriptions(
               `INSERT INTO subscriptions
                 (id, user_id, integration_id, source, source_subscription_id,
                  product_id, product_name, plan_interval, plan_interval_count,
-                 amount, currency, status, started_at,
+                 amount, amount_usd_cents, currency, status, started_at,
                  current_period_start, current_period_end,
                  customer_id, metadata)
-              VALUES (?, ?, ?, 'apple_app_store', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+              VALUES (?, ?, ?, 'apple_app_store', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
             ).bind(
               id, userId, integrationId, sourceSubId,
               productId, productName, interval, count,
-              amountCents, 'USD', status, eventDate,
+              amountCents, amountCents, 'USD', status, eventDate,
               periodStart, periodEnd,
               subscriberId,
               JSON.stringify({ country, device, app_name: appName, app_apple_id: appAppleId, customer_price: customerPrice, customer_currency: customerCurrency, original_proceeds: developerProceeds, original_currency: proceedsCurrency })
@@ -310,13 +311,14 @@ export async function syncAppleSubscriptions(
           ).bind(sourceSubId).first<{ id: string }>();
 
           if (exists) {
+            // LED-41: amount and amount_usd_cents identical post-normalize.
             await env.DB.prepare(
               `UPDATE subscriptions SET
-                amount = ?, currency = 'USD', status = 'active',
+                amount = ?, amount_usd_cents = ?, currency = 'USD', status = 'active',
                 current_period_end = ?, updated_at = datetime('now')
               WHERE id = ?`
             ).bind(
-              amountCents,
+              amountCents, amountCents,
               computePeriodEnd(dateStr, interval, count),
               exists.id
             ).run();
@@ -329,16 +331,16 @@ export async function syncAppleSubscriptions(
                 `INSERT INTO subscriptions
                   (id, user_id, integration_id, source, source_subscription_id,
                    product_id, product_name, plan_interval, plan_interval_count,
-                   amount, currency, status, started_at,
+                   amount, amount_usd_cents, currency, status, started_at,
                    current_period_start, current_period_end,
                    metadata)
-                VALUES (?, ?, ?, 'apple_app_store', ?, ?, ?, ?, ?, ?, 'USD', 'active', ?, ?, ?, ?)`
+                VALUES (?, ?, ?, 'apple_app_store', ?, ?, ?, ?, ?, ?, ?, 'USD', 'active', ?, ?, ?, ?)`
               ).bind(
                 id, userId, integrationId, sourceSubId,
                 subscriptionAppleId || subscriptionName,
                 subscriptionName || `${appName} Subscription`,
                 interval, count,
-                amountCents,
+                amountCents, amountCents,
                 dateStr,
                 computePeriodStart(periodEnd, interval, count), periodEnd,
                 JSON.stringify({ country, app_name: appName, source_type: 'summary' })

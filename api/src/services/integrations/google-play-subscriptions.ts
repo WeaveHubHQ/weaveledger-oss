@@ -212,16 +212,38 @@ export async function handleGooglePlayNotification(
     ? lineItem.expiryTime.split('T')[0]
     : null;
 
+  // LED-41: `amount` is in source minor units + `currency` is source. The
+  // forecasting-facing column `amount_usd_cents` needs an FX pass.
+  const ccyUpper = currency.toUpperCase();
+  const amountUsdCents = amount > 0
+    ? (await convertToUsdCents(env, amount, ccyUpper, startedAt))?.usdCents ?? null
+    : 0;
+  if (amount > 0 && amountUsdCents === null) {
+    console.warn(`[GP sub] FX miss for subscription amount: currency=${ccyUpper} date=${startedAt} amount=${amount} — amount_usd_cents will be NULL`);
+  }
+
   const id = generateId('sub');
   await env.DB.prepare(
     `INSERT INTO subscriptions
      (id, user_id, integration_id, source, source_subscription_id, product_id, product_name,
-      plan_interval, plan_interval_count, amount, currency, status, started_at,
+      plan_interval, plan_interval_count, amount, amount_usd_cents, currency, status, started_at,
       current_period_start, current_period_end, canceled_at, cancel_at, metadata)
-     VALUES (?, ?, ?, 'google_play', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     VALUES (?, ?, ?, 'google_play', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(source, source_subscription_id) DO UPDATE SET
        status = excluded.status,
        amount = CASE WHEN excluded.amount > 0 THEN excluded.amount ELSE subscriptions.amount END,
+       -- LED-41: only overwrite amount_usd_cents when the new sync produced
+       -- a real value. A transient FX miss (excluded.amount_usd_cents IS
+       -- NULL) must not wipe out a previously-correct number; forecasting
+       -- treats NULL as 0 and a paid sub would silently drop out of MRR.
+       amount_usd_cents = CASE
+         WHEN excluded.amount > 0 AND excluded.amount_usd_cents IS NOT NULL THEN excluded.amount_usd_cents
+         ELSE subscriptions.amount_usd_cents
+       END,
+       -- LED-41: keep currency in sync with amount. Without this a row
+       -- first created with currency='USD' (catalog fallback) and later
+       -- refreshed in a non-USD currency would keep the stale code.
+       currency = CASE WHEN excluded.amount > 0 THEN excluded.currency ELSE subscriptions.currency END,
        current_period_start = excluded.current_period_start,
        current_period_end = excluded.current_period_end,
        canceled_at = excluded.canceled_at,
@@ -232,7 +254,7 @@ export async function handleGooglePlayNotification(
     id, userId, integrationId, purchaseToken,
     lineItem.productId, lineItem.productId,
     interval, count,
-    amount, currency.toUpperCase(),
+    amount, amountUsdCents, ccyUpper,
     status, startedAt,
     periodStart.toISOString().split('T')[0], periodEnd,
     canceledAt, cancelAt,
@@ -462,14 +484,29 @@ export async function backfillGooglePlaySubscriptions(
 
     try {
       const id = generateId('sub');
+      // LED-41: latest.amount is source minor units; FX-convert for the
+      // forecasting-facing column.
+      const latestUsd = latest.amount > 0
+        ? (await convertToUsdCents(env, latest.amount, latest.currency, latest.transaction_date))?.usdCents ?? null
+        : 0;
       await env.DB.prepare(
         `INSERT INTO subscriptions
          (id, user_id, integration_id, source, source_subscription_id, product_id, product_name,
-          plan_interval, plan_interval_count, amount, currency, status, started_at,
+          plan_interval, plan_interval_count, amount, amount_usd_cents, currency, status, started_at,
           current_period_start, current_period_end, metadata)
-         VALUES (?, ?, ?, 'google_play', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         VALUES (?, ?, ?, 'google_play', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(source, source_subscription_id) DO UPDATE SET
            status = excluded.status,
+           -- LED-41: keep amount + currency + amount_usd_cents in sync so a
+           -- re-backfill can repair rows whose amount_usd_cents is NULL or
+           -- whose price has changed. NULL on a fresh FX miss preserves
+           -- the prior good value rather than blanking it.
+           amount = CASE WHEN excluded.amount > 0 THEN excluded.amount ELSE subscriptions.amount END,
+           amount_usd_cents = CASE
+             WHEN excluded.amount > 0 AND excluded.amount_usd_cents IS NOT NULL THEN excluded.amount_usd_cents
+             ELSE subscriptions.amount_usd_cents
+           END,
+           currency = CASE WHEN excluded.amount > 0 THEN excluded.currency ELSE subscriptions.currency END,
            current_period_start = excluded.current_period_start,
            current_period_end = excluded.current_period_end,
            updated_at = datetime('now')`
@@ -477,7 +514,7 @@ export async function backfillGooglePlaySubscriptions(
         id, userId, integrationId, baseOrderId,
         latest.product_name, latest.product_name,
         interval, intervalCount,
-        latest.amount, latest.currency,
+        latest.amount, latestUsd, latest.currency,
         status, earliest.transaction_date,
         latest.transaction_date, periodEnd.toISOString().split('T')[0],
         JSON.stringify({ order_count: orders.length, base_order_id: baseOrderId })

@@ -131,11 +131,20 @@ export async function addGooglePlaySubscription(request: Request, env: Env, user
       1 // SUBSCRIPTION_RECOVERED (treat as active)
     );
 
-    // If amount was provided and the lookup returned 0, update it
+    // If amount was provided and the lookup returned 0, update it.
+    // LED-41: also refresh amount_usd_cents using current FX. We use the
+    // existing currency on the row (set by handleGooglePlayNotification).
     if (body.amount) {
-      await env.DB.prepare(
-        "UPDATE subscriptions SET amount = ? WHERE source = 'google_play' AND source_subscription_id = ? AND amount = 0"
-      ).bind(body.amount, body.purchase_token).run();
+      const row = await env.DB.prepare(
+        "SELECT currency, started_at FROM subscriptions WHERE source = 'google_play' AND source_subscription_id = ? AND amount = 0"
+      ).bind(body.purchase_token).first<{ currency: string; started_at: string }>();
+      if (row) {
+        const { convertToUsdCents } = await import('../utils/fx');
+        const usd = await convertToUsdCents(env, body.amount, row.currency, row.started_at);
+        await env.DB.prepare(
+          "UPDATE subscriptions SET amount = ?, amount_usd_cents = ? WHERE source = 'google_play' AND source_subscription_id = ? AND amount = 0"
+        ).bind(body.amount, usd?.usdCents ?? null, body.purchase_token).run();
+      }
     }
 
     // Return the created subscription

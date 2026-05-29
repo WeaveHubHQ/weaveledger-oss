@@ -68,6 +68,27 @@ const april = [
 const aprilTotal = april.reduce((a, b) => a + b, 0);
 eq('April 2026 USD cents total', aprilTotal, 2450); // matches sum of live DB usd_gross_cents.
 
+// LED-41 — subscription MRR aggregation invariant.
+// MRR must sum USD cents across heterogeneous source currencies. The
+// contract is that subscriptions.amount_usd_cents always holds USD cents
+// regardless of the row's source currency.
+type SubRow = { amount_usd_cents: number; interval: 'month' | 'year'; count: number };
+const mixedSubs: SubRow[] = [
+  { amount_usd_cents: 999,  interval: 'month', count: 1 }, // USD $9.99/mo
+  { amount_usd_cents: 1199, interval: 'month', count: 1 }, // EUR row pre-FX-normalized to USD
+  { amount_usd_cents: 9999, interval: 'year',  count: 1 }, // USD $99.99/yr → ~$8.33/mo
+  { amount_usd_cents: 315,  interval: 'month', count: 1 }, // JPY ¥500/mo, normalized to $3.15
+];
+function monthlyCentsOf(s: SubRow): number {
+  switch (s.interval) {
+    case 'month': return Math.round(s.amount_usd_cents / s.count);
+    case 'year':  return Math.round(s.amount_usd_cents / (s.count * 12));
+  }
+}
+const mrr = mixedSubs.reduce((acc, s) => acc + monthlyCentsOf(s), 0);
+// 999 + 1199 + round(9999/12)=833 + 315 = 3346 USD cents = $33.46.
+eq('Mixed-currency MRR sums USD cents', mrr, 3346);
+
 let failed = 0;
 for (const c of cases) {
   const ok = c.got === c.want;
