@@ -378,11 +378,17 @@ export async function getBookSummary(request: Request, env: Env, userId: string,
      GROUP BY category ORDER BY total DESC`
   ).bind(...params).all();
 
+  // LED-43: `by_month` feeds the Monthly Trend chart, which is by definition a
+  // multi-bucket history. Clipping it with the page-level date filter (e.g.
+  // "month" = today-30d) collapsed the chart to a single bucket whenever
+  // the window straddled fewer than two calendar months. The other tiles
+  // legitimately honor the filter; this query intentionally ignores it and
+  // always returns the trailing 12 calendar months of completed receipts.
   const byMonth = await env.DB.prepare(
     `SELECT strftime('%Y-%m', date) as month, COUNT(*) as count, COALESCE(SUM(amount), 0) as total
-     FROM receipts WHERE book_id = ? AND status = 'completed' AND date IS NOT NULL${dateFilter}
+     FROM receipts WHERE book_id = ? AND status = 'completed' AND date IS NOT NULL
      GROUP BY month ORDER BY month DESC LIMIT 12`
-  ).bind(...params).all();
+  ).bind(bookId).all();
 
   const byPaymentMethod = await env.DB.prepare(
     `SELECT payment_method, COUNT(*) as count, COALESCE(SUM(amount), 0) as total

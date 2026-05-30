@@ -403,15 +403,21 @@ export async function getIncomeSummary(request: Request, env: Env, userId: strin
      GROUP BY source ORDER BY total_cents DESC`
   ).bind(...params).all();
 
+  // LED-43: `by_month` feeds the Monthly Revenue chart. A trend chart is
+  // by definition multi-bucket history; clipping it with the page's
+  // date_from/date_to filter (used for the headline tiles) collapses the
+  // chart to one bar whenever the window spans fewer than two calendar
+  // months. Always return the trailing 12 calendar months regardless of
+  // page filter. `overview` and `by_source` continue to honor the filter.
   const byMonth = await env.DB.prepare(
     `SELECT strftime('%Y-%m', transaction_date) as month, COUNT(*) as count,
             COALESCE(SUM(COALESCE(usd_gross_cents, usd_amount_cents)), 0) as total_cents,
             COALESCE(SUM(COALESCE(usd_gross_cents, usd_amount_cents)), 0) as gross_cents,
             COALESCE(SUM(CASE WHEN usd_gross_cents IS NOT NULL AND source != 'stripe' THEN COALESCE(usd_fee_cents, 0) ELSE 0 END), 0) as fee_cents,
             COALESCE(SUM(COALESCE(usd_gross_cents, usd_amount_cents) - CASE WHEN usd_gross_cents IS NOT NULL AND source != 'stripe' THEN COALESCE(usd_fee_cents, 0) ELSE 0 END), 0) as net_cents
-     FROM income_transactions WHERE user_id = ?${dateFilter}
+     FROM income_transactions WHERE user_id = ?
      GROUP BY month ORDER BY month DESC LIMIT 12`
-  ).bind(...params).all();
+  ).bind(userId).all();
 
   return success({
     overview,
