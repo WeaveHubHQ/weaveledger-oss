@@ -39,6 +39,15 @@ class_name = "ReceiptProcessorWorkflow"
 # The licensing worker validates subscriptions centrally.
 [vars]
 SUBSCRIPTION_ENFORCEMENT = "none"
+
+# Who may create accounts on your instance:
+#   "open"       — anyone who can reach the URL can register
+#   "first_user" — registration closes once any account exists (default here:
+#                  register your own account right after deploying, then the
+#                  door closes; open registration would let strangers consume
+#                  your D1/R2 quota and your server-level AI key)
+#   "invite"     — new emails must hold a pending book invitation
+REGISTRATION = "first_user"
 # LICENSING_URL = "https://licensing.weavehub.app"  # Only needed when SUBSCRIPTION_ENFORCEMENT = "licensing"
 # APPLE_BUNDLE_ID = "com.yourcompany.yourapp"  # Optional: restrict Apple IAP verification to a specific bundle ID
 # ALLOWED_ORIGIN = "https://your-frontend.example.com"  # Optional: override default CORS origin for a custom web frontend

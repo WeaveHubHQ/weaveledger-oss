@@ -44,6 +44,18 @@ This opens a browser window where you authorize Wrangler to manage your Cloudfla
 
 If you ever want to integrate with WeaveLedger's commercial licensing server (e.g., to validate App Store subscriptions centrally), change this to `"licensing"` and set `LICENSING_URL`.
 
+## Registration Control
+
+Your worker URL serves a public landing page with a sign-in/register form (and a full web dashboard after login). Who may create accounts is controlled by the `REGISTRATION` var in `wrangler.toml`:
+
+| Mode | Behavior |
+|------|----------|
+| `"first_user"` (shipped default) | Registration closes once any account exists. Deploy, register your own account, done — strangers who find your URL cannot sign up. |
+| `"invite"` | New emails must hold a pending book invitation — share a book with someone's email and they can then register. |
+| `"open"` | Anyone can register. Each account's data is isolated, but registered users consume your D1/R2 quota, and users who have not saved their own AI key in Settings fall back to your server-level `CLAUDE_API_KEY` / `OPENAI_API_KEY` for receipt scanning. |
+
+Registration and login are also IP rate-limited (5/min and 10/min). Unrecognized `REGISTRATION` values fail closed.
+
 ---
 
 ## Quick Start
@@ -87,15 +99,13 @@ npx wrangler r2 bucket create weaveledger-receipts
 
 ### 3. Run Database Migrations
 
-Apply all 14 migrations to set up the database schema:
+Apply all migrations to set up the database schema:
 
 ```bash
-for f in migrations/*.sql; do
-  npx wrangler d1 execute weaveledger-db --file="$f" --remote
-done
+npm run db:migrate
 ```
 
-See [Database Migrations](#database-migrations) below for what each migration does.
+This uses wrangler's D1 migrations system: every file in `migrations/` is applied in order and tracked in a `d1_migrations` table, so re-running only applies new ones. See [Database Migrations](#database-migrations) below for what each migration does.
 
 ### 4. Set Secrets
 
@@ -126,16 +136,18 @@ curl https://weaveledger-api.<your-subdomain>.workers.dev/api/health
 You should see:
 
 ```json
-{"status":"ok","version":"2.1.4"}
+{"status":"ok","version":"2.2.0"}
 ```
 
-Register your first user:
+Register your first user — easiest is to open your worker URL in a browser and use the **Get Started / Sign In** form on the landing page. Or via curl:
 
 ```bash
 curl -X POST https://weaveledger-api.<your-subdomain>.workers.dev/api/auth/register \
   -H "Content-Type: application/json" \
   -d '{"email":"you@example.com","password":"YourSecurePassword123!","name":"Your Name"}'
 ```
+
+> **Note:** `wrangler.toml` ships with `REGISTRATION = "first_user"`, so registration closes automatically after this first account. See [Registration Control](#registration-control) to allow more users.
 
 You are now ready to connect the iOS app.
 
@@ -157,7 +169,7 @@ The app stores your server URL locally and sends all requests to your self-hoste
 
 ## Database Migrations
 
-The `api/migrations/` directory contains 14 migrations that must be applied in order. The `for` loop in the Quick Start handles this automatically.
+The `api/migrations/` directory contains all migrations, applied in order. The `for` loop in the Quick Start handles this automatically.
 
 | File | Description |
 |------|-------------|
@@ -175,6 +187,17 @@ The `api/migrations/` directory contains 14 migrations that must be applied in o
 | `0012_token_version.sql` | Session invalidation on password change or MFA toggle |
 | `0013_app_subscriptions.sql` | WeaveLedger app subscription tracking (Apple IAP) |
 | `0014_fix_environment_check.sql` | Broaden `app_subscriptions.environment` CHECK to allow StoreKit sandbox/Xcode values |
+| `0015_rejected_email_senders.sql` | Track rejected inbound email senders |
+| `0017_income_lifecycle.sql` | Income transaction lifecycle (pending/settled) |
+| `0018_payouts.sql` | Payout tracking for reconciled income |
+| `0019_cron_runs.sql` | Cron run audit log |
+| `0020_income_updated_at.sql` | `updated_at` on income transactions |
+| `0021_gross_amount.sql` | Gross amount/currency columns on income |
+| `0022_zero_decimal_currency_backfill.sql` | Fix zero-decimal currency amounts (JPY etc.) |
+| `0023_subscription_amount_usd_cents.sql` | USD-normalized subscription amounts for MRR/ARR |
+| `0024_expense_reports.sql` | Expense reports and report↔receipt links |
+
+(There is no `0016` — the sequence intentionally skips it.)
 
 ---
 
@@ -482,16 +505,15 @@ npx wrangler dev  # Start local dev server on http://localhost:8787
 
 ### npm Scripts
 
-The `package.json` includes a few convenience scripts. Note that the migration scripts only run individual migrations, not the full set:
+The `package.json` includes a few convenience scripts:
 
-| Script | Command | Description |
-|--------|---------|-------------|
-| `npm run dev` | `wrangler dev` | Start local development server |
-| `npm run deploy` | `wrangler deploy` | Deploy to Cloudflare |
-| `npm run db:migrate` | `wrangler d1 execute ... --file=0001_initial.sql` | Run only the initial migration (remote) |
-| `npm run db:migrate:local` | Same as above with `--local` | Run only the initial migration (local) |
-
-**To run all migrations**, use the `for` loop from the Quick Start section rather than these scripts.
+| Script | Description |
+|--------|-------------|
+| `npm run dev` | Start local development server |
+| `npm run deploy` | Apply any pending D1 migrations, then deploy to Cloudflare |
+| `npm run db:migrate` | Apply all pending migrations (remote) |
+| `npm run db:migrate:local` | Apply all pending migrations (local dev DB) |
+| `npm run db:baseline` | One-time: mark 0001–0023 as applied on a database that predates migration tracking (see [Troubleshooting](#migration-fails-with-table-already-exists)) |
 
 ---
 
@@ -506,13 +528,11 @@ git pull origin main
 cd api
 npm install
 
-# Run all migrations (already-applied migrations are idempotent)
-for f in migrations/*.sql; do
-  npx wrangler d1 execute weaveledger-db --file="$f" --remote
-done
-
-npx wrangler deploy
+# Applies any pending migrations, then deploys
+npm run deploy
 ```
+
+> **Upgrading from a pre-2.2 install?** If you originally applied migrations with the old `for` loop (`d1 execute` per file), your database has no migration tracking and `npm run deploy` will fail trying to re-apply `0001`. Run `npm run db:baseline` **once** first — it marks 0001–0023 as applied without running them — then `npm run deploy` works from then on.
 
 Check the [releases page](https://github.com/WeaveHubHQ/weaveledger-oss/releases) for migration notes and breaking changes before updating.
 
@@ -524,13 +544,17 @@ Check the [releases page](https://github.com/WeaveHubHQ/weaveledger-oss/releases
 
 You have not set `SUBSCRIPTION_ENFORCEMENT = "none"` in `wrangler.toml`. See [Unlock All Features](#unlock-all-features-self-hosters).
 
+### "Registration is closed on this server"
+
+`REGISTRATION = "first_user"` (the shipped default) closes registration once any account exists. To add more users, either switch to `"invite"` and share a book with their email first, or set `"open"`, then redeploy. See [Registration Control](#registration-control).
+
 ### `database_id` is empty / D1 errors on deploy
 
 After running `npx wrangler d1 create weaveledger-db`, you must copy the `database_id` from the output and paste it into `wrangler.toml`. The default value is an empty string.
 
 ### Migration fails with "table already exists"
 
-This is safe to ignore. The migrations use `CREATE TABLE IF NOT EXISTS` for new tables. `ALTER TABLE` statements may fail if re-run, but this does not corrupt data. You can safely re-run the full migration loop.
+Your database was set up before migration tracking (the old docs applied each file with `d1 execute`), so `wrangler d1 migrations apply` is trying to re-run migrations that already ran. Run `npm run db:baseline` once — it marks 0001–0023 as applied without executing them — then `npm run db:migrate` / `npm run deploy` will only apply genuinely new migrations. No data is affected.
 
 ### "Unauthorized" on every request
 
