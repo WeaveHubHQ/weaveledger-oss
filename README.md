@@ -11,6 +11,7 @@ Smart expense tracking for freelancers and small business owners. Self-hosted on
 - **AI Receipt Scanning** -- Snap a photo, AI extracts merchant, amount, date, and category (Claude or GPT-4o)
 - **Expense Tracking** -- Categorize, search, filter, and manage all business expenses
 - **Expense Reports** -- Bundle selected receipts into a report (draft → submitted → reimbursed) and export it as PDF or CSV for reimbursement
+- **Statement Matching** -- Import bank/card statements (OFX or CSV) and auto-match transactions to receipts; convert unmatched charges into expenses
 - **Subscription Analytics** -- Track MRR/ARR across Stripe, Google Play, and Apple App Store
 - **Revenue Forecasting** -- 12-month revenue projections from active subscriptions
 - **Budget Management** -- Set budgets by category, track spending vs limits
@@ -136,7 +137,7 @@ curl https://weaveledger-api.<your-subdomain>.workers.dev/api/health
 You should see:
 
 ```json
-{"status":"ok","version":"2.2.0"}
+{"status":"ok","version":"2.3.0"}
 ```
 
 Register your first user — easiest is to open your worker URL in a browser and use the **Get Started / Sign In** form on the landing page. Or via curl:
@@ -169,7 +170,7 @@ The app stores your server URL locally and sends all requests to your self-hoste
 
 ## Database Migrations
 
-The `api/migrations/` directory contains all migrations, applied in order. The `for` loop in the Quick Start handles this automatically.
+The `api/migrations/` directory contains all migrations. `npm run db:migrate` (and `npm run deploy`) applies them in order and tracks what has run.
 
 | File | Description |
 |------|-------------|
@@ -196,6 +197,7 @@ The `api/migrations/` directory contains all migrations, applied in order. The `
 | `0022_zero_decimal_currency_backfill.sql` | Fix zero-decimal currency amounts (JPY etc.) |
 | `0023_subscription_amount_usd_cents.sql` | USD-normalized subscription amounts for MRR/ARR |
 | `0024_expense_reports.sql` | Expense reports and report↔receipt links |
+| `0025_statements.sql` | Bank/card statement import + receipt matching |
 
 (There is no `0016` — the sequence intentionally skips it.)
 
@@ -305,6 +307,19 @@ All endpoints are under `/api/`. Routes marked with a lock require a valid JWT i
 | `PUT` | `/api/books/:id/budgets/:bid` | Update budget |
 | `DELETE` | `/api/books/:id/budgets/:bid` | Delete budget |
 | `GET` | `/api/books/:id/budgets/status` | Budget status (spending vs limits) |
+
+### Statements (authenticated, paid)
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/api/books/:id/statements/upload` | Import OFX/CSV statement, auto-match to receipts (`?format=ofx\|csv` optional) |
+| `GET` | `/api/books/:id/statements` | List statements with match counts |
+| `GET` | `/api/books/:id/statements/:sid` | Statement transactions + matched receipt info |
+| `DELETE` | `/api/books/:id/statements/:sid` | Delete statement (receipts kept) |
+| `POST` | `/api/books/:id/statements/:sid/transactions/:tid/match` | Confirm suggested or explicit match |
+| `POST` | `/api/books/:id/statements/:sid/transactions/:tid/unmatch` | Clear a match / restore ignored |
+| `POST` | `/api/books/:id/statements/:sid/transactions/:tid/ignore` | Ignore (e.g. personal spending) |
+| `POST` | `/api/books/:id/statements/:sid/transactions/:tid/create-receipt` | Create a receipt from an unmatched transaction |
 
 ### Expense Reports (authenticated, paid)
 

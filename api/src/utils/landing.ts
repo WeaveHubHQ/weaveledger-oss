@@ -366,6 +366,7 @@ tr{cursor:pointer}
     <div class="app-nav-links" id="navLinks">
       <a href="#" data-page="dashboard" class="active">Overview</a>
       <a href="#" data-page="expenses">Expenses</a>
+      <a href="#" data-page="reports">Reports</a>
       <a href="#" data-page="income">Revenue</a>
       <a href="#" data-page="subscriptions">Subscriptions</a>
       <a href="#" data-page="budgets">Budgets</a>
@@ -431,6 +432,14 @@ tr{cursor:pointer}
 </div>
 
 <!-- REVENUE PAGE -->
+<!-- REPORTS PAGE -->
+<div class="page" id="pg-reports">
+  <div class="page-header"><div><h1 class="page-title">Expense Reports</h1><p class="page-subtitle">Bundle receipts to hand to a client or employer</p></div>
+    <div style="display:flex;gap:8px"><button class="btn btn-gold btn-sm" id="addReportBtn">+ New Report</button><button class="btn-refresh" id="refreshReports" title="Refresh">&#x21bb;</button></div></div>
+  <div class="card"><div class="card-header"><span class="card-title">Reports</span></div><div id="reportList"><div class="loading">Loading...</div></div></div>
+  <div class="card" id="reportDetailCard" style="display:none"><div class="card-header"><span class="card-title" id="reportDetailTitle"></span><div style="display:flex;gap:8px;flex-wrap:wrap" id="reportDetailActions"></div></div><div id="reportDetail"></div></div>
+</div>
+
 <div class="page" id="pg-income">
   <div class="page-header"><div><h1 class="page-title">Revenue</h1><p class="page-subtitle">Income from connected platforms</p></div><button class="btn-refresh" id="refreshIncome" title="Refresh">&#x21bb;</button></div>
   <div class="stats-row" id="incomeStats"></div>
@@ -1090,6 +1099,7 @@ function navigate(pg){
   if(location.hash!=='#'+pg)history.replaceState(null,'','#'+pg);
   if(pg==='dashboard')loadDashboard();
   if(pg==='expenses')loadReceipts();
+  if(pg==='reports')loadReports();
   if(pg==='income')loadIncome();
   if(pg==='subscriptions')loadSubscriptions();
   if(pg==='budgets')loadBudgets();
@@ -2217,6 +2227,100 @@ $('addBudgetBtn')&&$('addBudgetBtn').addEventListener('click',function(){
       if(!cat){toast('Select a category','error');return}
       if(!amt||amt<=0){toast('Enter a valid amount','error');return}
       try{await api('/api/books/'+encodeURIComponent(bookId)+'/budgets',{method:'POST',body:{category:cat,amount:Math.round(amt*100),period:per}});toast('Budget created');closeModal();loadBudgets();}catch(e){toast(e.message,'error')}
+    }},'Create')
+  );openModal();
+});
+
+// EXPENSE REPORTS
+var REPORT_STATUS_COLORS={draft:'#6b7280',submitted:'#c77b1e',reimbursed:'#2a7a4b'};
+var openReportId=null;
+function escH(s){return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;')}
+function fmtCur(a,c){try{return new Intl.NumberFormat('en-US',{style:'currency',currency:c||'USD'}).format(a||0)}catch(e){return (a||0).toFixed(2)+' '+(c||'')}}
+function reportTotalsText(totals){if(!totals||!totals.length)return fmtCur(0,'USD');return totals.map(function(t){return fmtCur(t.total,t.currency)}).join(' + ')}
+function reportBadge(status){var c=REPORT_STATUS_COLORS[status]||'#6b7280';return '<span style="font-size:.72rem;font-weight:600;padding:2px 10px;border-radius:12px;background:'+c+'1f;color:'+c+'">'+escH(status)+'</span>'}
+async function loadReports(){
+  var bookId=getBookId();if(!bookId)return;
+  try{
+    var rs=await api('/api/books/'+encodeURIComponent(bookId)+'/reports');
+    var list=$('reportList');
+    if(!rs.length){list.innerHTML='<div class="empty"><div class="empty-icon">&#x1F4C4;</div>No reports yet. Click + New Report, then add receipts from the Expenses tab in the iOS app.</div>';$('reportDetailCard').style.display='none';openReportId=null;return}
+    var html='';
+    rs.forEach(function(r){
+      html+='<div class="report-row" data-rid="'+escH(r.id)+'" style="display:flex;justify-content:space-between;align-items:center;padding:12px 0;border-bottom:1px solid rgba(10,22,40,.04);cursor:pointer">'
+        +'<div><div style="font-weight:500">'+escH(r.title)+'</div><div style="font-size:.78rem;color:var(--text-light)">'+(r.item_count||0)+' receipt'+((r.item_count||0)===1?'':'s')+' &middot; '+fmtDate(r.created_at)+'</div></div>'
+        +'<div style="display:flex;gap:12px;align-items:center"><span style="font-weight:600">'+reportTotalsText(r.totals)+'</span>'+reportBadge(r.status)+'</div></div>';
+    });
+    list.innerHTML=html;
+    qa('.report-row').forEach(function(row){row.addEventListener('click',function(){openReport(this.dataset.rid)})});
+    if(openReportId)openReport(openReportId);
+  }catch(e){$('reportList').innerHTML='<div class="empty">Failed to load reports</div>'}
+}
+async function openReport(id){
+  var bookId=getBookId();if(!bookId)return;
+  try{
+    var r=await api('/api/books/'+encodeURIComponent(bookId)+'/reports/'+encodeURIComponent(id));
+    openReportId=r.id;
+    $('reportDetailCard').style.display='';
+    $('reportDetailTitle').innerHTML=escH(r.title)+' '+reportBadge(r.status);
+    var actions=$('reportDetailActions');actions.replaceChildren();
+    function actBtn(label,cls,fn){actions.appendChild(el('button',{className:'btn btn-sm '+cls,onclick:fn},label))}
+    if(r.status==='draft')actBtn('Mark Submitted','btn-gold',function(){setReportStatus(r.id,'submitted')});
+    if(r.status==='submitted'){actBtn('Mark Reimbursed','btn-gold',function(){setReportStatus(r.id,'reimbursed')});actBtn('Back to Draft','btn-outline',function(){setReportStatus(r.id,'draft')})}
+    if(r.status==='reimbursed')actBtn('Reopen','btn-outline',function(){setReportStatus(r.id,'submitted')});
+    actBtn('CSV','btn-outline',function(){downloadReportCsv(r)});
+    actBtn('Delete','btn-danger',function(){deleteReport(r)});
+    var html='';
+    if(r.notes)html+='<p style="color:var(--text-light);font-size:.85rem;margin-bottom:10px">'+escH(r.notes)+'</p>';
+    var receipts=r.receipts||[];
+    if(!receipts.length)html+='<div class="empty">No receipts on this report yet. Add them from the Expenses tab in the iOS app.</div>';
+    receipts.forEach(function(rc){
+      html+='<div style="display:flex;justify-content:space-between;align-items:center;padding:10px 0;border-bottom:1px solid rgba(10,22,40,.04)">'
+        +'<div><div style="font-weight:500">'+escH(rc.merchant||'Unknown')+'</div><div style="font-size:.75rem;color:var(--text-light)">'+escH(rc.date||'')+' &middot; '+escH(rc.category||'')+'</div></div>'
+        +'<div style="display:flex;gap:10px;align-items:center"><span>'+fmtCur(rc.amount,rc.currency)+'</span>'
+        +(r.status==='draft'?'<button class="btn btn-outline btn-sm rm-item" data-rcid="'+escH(rc.id)+'" style="color:var(--red);border-color:rgba(204,68,68,.3)">Remove</button>':'')
+        +'</div></div>';
+    });
+    html+='<div style="display:flex;justify-content:space-between;padding:12px 0 0;font-weight:700"><span>Total</span><span>'+reportTotalsText(r.totals)+'</span></div>';
+    $('reportDetail').innerHTML=html;
+    qa('.rm-item').forEach(function(b){b.addEventListener('click',function(ev){ev.stopPropagation();removeReportItem(r.id,this.dataset.rcid)})});
+  }catch(e){toast(e.message,'error')}
+}
+async function setReportStatus(id,status){
+  var bookId=getBookId();
+  try{await api('/api/books/'+encodeURIComponent(bookId)+'/reports/'+encodeURIComponent(id),{method:'PUT',body:{status:status}});toast('Report '+status);loadReports()}catch(e){toast(e.message,'error')}
+}
+async function removeReportItem(id,rcid){
+  var bookId=getBookId();
+  try{await api('/api/books/'+encodeURIComponent(bookId)+'/reports/'+encodeURIComponent(id)+'/items/'+encodeURIComponent(rcid),{method:'DELETE'});loadReports()}catch(e){toast(e.message,'error')}
+}
+async function deleteReport(r){
+  if(!confirm('Delete report "'+r.title+'"? Receipts are kept.'))return;
+  var bookId=getBookId();
+  try{await api('/api/books/'+encodeURIComponent(bookId)+'/reports/'+encodeURIComponent(r.id),{method:'DELETE'});openReportId=null;$('reportDetailCard').style.display='none';toast('Report deleted');loadReports()}catch(e){toast(e.message,'error')}
+}
+async function downloadReportCsv(r){
+  var bookId=getBookId();
+  try{
+    var resp=await fetch('/api/books/'+encodeURIComponent(bookId)+'/reports/'+encodeURIComponent(r.id)+'/export/csv',{headers:{'Authorization':'Bearer '+T}});
+    if(!resp.ok)throw new Error('Export failed');
+    var blob=await resp.blob();var a=document.createElement('a');
+    a.href=URL.createObjectURL(blob);a.download=(r.title||'report').replace(/[^a-z0-9 _-]/gi,'_')+'.csv';
+    document.body.appendChild(a);a.click();a.remove();setTimeout(function(){URL.revokeObjectURL(a.href)},5000);
+  }catch(e){toast(e.message,'error')}
+}
+$('refreshReports')&&$('refreshReports').addEventListener('click',function(){var b=this;b.classList.add('spinning');loadReports().finally(function(){b.classList.remove('spinning')})});
+$('addReportBtn')&&$('addReportBtn').addEventListener('click',function(){
+  var bookId=getBookId();if(!bookId){toast('No book selected','error');return}
+  $('modalTitle').textContent='New Report';
+  $('modalBody').replaceChildren(
+    formGroup('Title','text','reportTitle','','Denver trip - March'),
+    formGroup('Notes (optional)','text','reportNotes','','')
+  );
+  $('modalFooter').replaceChildren(
+    el('button',{className:'btn btn-outline',style:{color:'var(--navy)',borderColor:'var(--cream-dark)'},onclick:closeModal},'Cancel'),
+    el('button',{className:'btn btn-gold',onclick:async function(){
+      var t=$('reportTitle').value.trim();if(!t){toast('Enter a title','error');return}
+      try{await api('/api/books/'+encodeURIComponent(bookId)+'/reports',{method:'POST',body:{title:t,notes:$('reportNotes').value||null}});toast('Report created');closeModal();loadReports();}catch(e){toast(e.message,'error')}
     }},'Create')
   );openModal();
 });
