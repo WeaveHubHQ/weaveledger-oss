@@ -2,7 +2,7 @@ import { Env, ExportFormat } from '../types';
 import { error } from '../utils/response';
 import { canAccessBook } from '../middleware/auth';
 
-interface ReceiptRow {
+export interface ReceiptRow {
   id: string;
   merchant: string | null;
   amount: number | null;
@@ -45,12 +45,31 @@ export async function exportBook(request: Request, env: Env, userId: string, boo
   const book = await env.DB.prepare('SELECT name, currency FROM books WHERE id = ?').bind(bookId).first<{ name: string; currency: string }>();
   const bookName = sanitizeFilename(book?.name || 'export');
 
+  return renderReceiptsExport(receipts, bookName, book?.currency || 'USD', format);
+}
+
+/** Report metadata threaded into report exports (pdf_data payload / filenames). */
+export interface ReportExportMeta {
+  title: string;
+  status: string;
+  notes: string | null;
+}
+
+/**
+ * Render an arbitrary list of receipt rows in the given format. Used by both
+ * whole-book export (`exportBook`) and expense-report export, which selects
+ * rows via the expense_report_items join instead of a date filter.
+ */
+export function renderReceiptsExport(
+  receipts: ReceiptRow[], baseName: string, currency: string,
+  format: ExportFormat, report?: ReportExportMeta,
+): Response {
   switch (format) {
-    case 'csv': return exportCSV(receipts, bookName);
-    case 'json': return exportJSON(receipts, bookName);
-    case 'qbo': return exportQBO(receipts, bookName, book?.currency || 'USD');
-    case 'ofx': return exportOFX(receipts, bookName, book?.currency || 'USD');
-    case 'pdf': return exportPDFData(receipts, bookName);
+    case 'csv': return exportCSV(receipts, baseName);
+    case 'json': return exportJSON(receipts, baseName);
+    case 'qbo': return exportQBO(receipts, baseName, currency);
+    case 'ofx': return exportOFX(receipts, baseName, currency);
+    case 'pdf': return exportPDFData(receipts, baseName, report);
     default: return error('Unsupported format');
   }
 }
@@ -267,7 +286,7 @@ NEWFILEUID:NONE
   });
 }
 
-function exportPDFData(receipts: ReceiptRow[], bookName: string): Response {
+function exportPDFData(receipts: ReceiptRow[], bookName: string, report?: ReportExportMeta): Response {
   // Return structured data for client-side PDF generation
   // (Cloudflare Workers can't generate full PDFs without heavy dependencies,
   //  so we provide structured data the iOS app renders to PDF)
@@ -284,6 +303,7 @@ function exportPDFData(receipts: ReceiptRow[], bookName: string): Response {
   const data = {
     format: 'pdf_data',
     book: bookName,
+    ...(report ? { report } : {}),
     exported_at: new Date().toISOString(),
     summary: { count: receipts.length, total, by_category: byCategory },
     receipts: receipts.map(r => ({

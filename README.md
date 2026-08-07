@@ -10,6 +10,7 @@ Smart expense tracking for freelancers and small business owners. Self-hosted on
 
 - **AI Receipt Scanning** -- Snap a photo, AI extracts merchant, amount, date, and category (Claude or GPT-4o)
 - **Expense Tracking** -- Categorize, search, filter, and manage all business expenses
+- **Expense Reports** -- Bundle selected receipts into a report (draft → submitted → reimbursed) and export it as PDF or CSV for reimbursement
 - **Subscription Analytics** -- Track MRR/ARR across Stripe, Google Play, and Apple App Store
 - **Revenue Forecasting** -- 12-month revenue projections from active subscriptions
 - **Budget Management** -- Set budgets by category, track spending vs limits
@@ -281,6 +282,20 @@ All endpoints are under `/api/`. Routes marked with a lock require a valid JWT i
 | `PUT` | `/api/books/:id/budgets/:bid` | Update budget |
 | `DELETE` | `/api/books/:id/budgets/:bid` | Delete budget |
 | `GET` | `/api/books/:id/budgets/status` | Budget status (spending vs limits) |
+
+### Expense Reports (authenticated, paid)
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/api/books/:id/reports` | List reports (item counts + totals per currency) |
+| `POST` | `/api/books/:id/reports` | Create report (`{title, notes?, receipt_ids?}`) |
+| `GET` | `/api/books/:id/reports/:rid` | Report details with full receipt rows |
+| `PUT` | `/api/books/:id/reports/:rid` | Update title/notes/status (draft ↔ submitted → reimbursed) |
+| `DELETE` | `/api/books/:id/reports/:rid` | Delete report (receipts are kept) |
+| `POST` | `/api/books/:id/reports/:rid/items` | Add receipts (`{receipt_ids}`, draft only) |
+| `DELETE` | `/api/books/:id/reports/:rid/items/:receiptId` | Remove a receipt (draft only) |
+| `GET` | `/api/books/:id/reports/:rid/export/csv` | Export report as CSV |
+| `GET` | `/api/books/:id/reports/:rid/export/pdf` | Export report PDF data (client-rendered) |
 
 ### Tax (authenticated, paid)
 

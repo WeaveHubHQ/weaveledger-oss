@@ -11,6 +11,7 @@ import { generateId } from './utils/crypto';
 import { listSubscriptions, getSubscriptionSummary, getSubscriptionForecast, syncSubscriptions, addGooglePlaySubscription, handleGooglePlayWebhook } from './routes/subscriptions';
 import { verifyAppSubscription, getAppSubscriptionStatus, restoreAppSubscription, handleAppleNotificationWebhook } from './routes/app-subscription';
 import { listBudgets, createBudget, updateBudget, deleteBudget, getBudgetStatus } from './routes/budgets';
+import { listReports, createReport, getReport, updateReport, deleteReport, addReportItems, removeReportItem, exportReport } from './routes/reports';
 import { listRecurringExpenses, createRecurringExpense, updateRecurringExpense, deleteRecurringExpense, advanceRecurringExpenses } from './routes/recurring-expenses';
 import { getTaxCategories, getTaxSettings, updateTaxSettings, getTaxSummary, getTaxEstimates } from './routes/tax';
 import { getProfitAndLoss } from './routes/pnl';
@@ -405,6 +406,39 @@ export default {
         const [, bookId, budgetId] = budgetMatch;
         if (method === 'PUT' || method === 'PATCH') return paid(() => updateBudget(request, env, userId, bookId, budgetId));
         if (method === 'DELETE') return paid(() => deleteBudget(request, env, userId, bookId, budgetId));
+      }
+
+      // Expense report routes (paid)
+      const reportExportMatch = path.match(/^\/api\/books\/([^/]+)\/reports\/([^/]+)\/export\/(csv|pdf)$/);
+      if (reportExportMatch && method === 'GET') {
+        const [, bookId, reportId, format] = reportExportMatch;
+        return paid(() => exportReport(request, env, userId, bookId, reportId, format as ExportFormat));
+      }
+
+      const reportItemsMatch = path.match(/^\/api\/books\/([^/]+)\/reports\/([^/]+)\/items$/);
+      if (reportItemsMatch && method === 'POST') {
+        return paid(() => addReportItems(request, env, userId, reportItemsMatch[1], reportItemsMatch[2]));
+      }
+
+      const reportItemMatch = path.match(/^\/api\/books\/([^/]+)\/reports\/([^/]+)\/items\/([^/]+)$/);
+      if (reportItemMatch && method === 'DELETE') {
+        const [, bookId, reportId, receiptId] = reportItemMatch;
+        return paid(() => removeReportItem(request, env, userId, bookId, reportId, receiptId));
+      }
+
+      const reportsMatch = path.match(/^\/api\/books\/([^/]+)\/reports$/);
+      if (reportsMatch) {
+        const bookId = reportsMatch[1];
+        if (method === 'GET') return paid(() => listReports(request, env, userId, bookId));
+        if (method === 'POST') return paid(() => createReport(request, env, userId, bookId));
+      }
+
+      const reportMatch = path.match(/^\/api\/books\/([^/]+)\/reports\/([^/]+)$/);
+      if (reportMatch) {
+        const [, bookId, reportId] = reportMatch;
+        if (method === 'GET') return paid(() => getReport(request, env, userId, bookId, reportId));
+        if (method === 'PUT' || method === 'PATCH') return paid(() => updateReport(request, env, userId, bookId, reportId));
+        if (method === 'DELETE') return paid(() => deleteReport(request, env, userId, bookId, reportId));
       }
 
       // Recurring expense routes (paid)
