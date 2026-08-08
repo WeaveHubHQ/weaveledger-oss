@@ -1,5 +1,5 @@
 import { Env, AiProvider } from '../types';
-import { analyzeReceiptImage, analyzeReceiptPdf, analyzeReceiptEmail, setAnthropicBaseUrl } from '../services/receipt-analyzer';
+import { analyzeReceiptImage, analyzeReceiptPdf, analyzeReceiptEmail, setAnthropicBaseUrl, setAnthropicModel } from '../services/receipt-analyzer';
 import { generateId, decryptValue } from '../utils/crypto';
 import { WorkflowEntrypoint, WorkflowEvent, WorkflowStep } from 'cloudflare:workers';
 
@@ -158,6 +158,7 @@ export async function runReceiptPipeline(env: Env, payload: ReceiptWorkflowParam
           }
 
           setAnthropicBaseUrl(env.ANTHROPIC_BASE_URL);
+          setAnthropicModel(env.ANTHROPIC_MODEL);
           const runOnce = async (prov: AiProvider, key: string) => {
             if (input.kind === 'pdf') return analyzeReceiptPdf(input.data, key, prov);
             if (input.kind === 'image') return analyzeReceiptImage(input.data, input.contentType, key, prov);

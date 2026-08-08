@@ -3,7 +3,8 @@ export interface Env {
   RECEIPTS_BUCKET: R2Bucket;
   JWT_SECRET: string;
   CLAUDE_API_KEY: string;
-  ANTHROPIC_BASE_URL?: string;  // Anthropic-compatible endpoint override. WeaveHub AI: "https://ai.weavehub.app" with a wh_ai_ key in CLAUDE_API_KEY.
+  ANTHROPIC_BASE_URL?: string;
+  ANTHROPIC_MODEL?: string;               // extraction model override; default claude-sonnet-4-5  // Anthropic-compatible endpoint override. WeaveHub AI: "https://ai.weavehub.app" with a wh_ai_ key in CLAUDE_API_KEY.
   OPENAI_API_KEY: string;
   RECEIPT_WORKFLOW?: Workflow;            // absent on platform (dispatch-namespace) tenant workers — inline processing is used
   DISPATCH_SECRET?: string;               // platform mode: authenticates internal calls from the dispatcher
