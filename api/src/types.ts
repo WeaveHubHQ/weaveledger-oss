@@ -3,6 +3,7 @@ export interface Env {
   RECEIPTS_BUCKET: R2Bucket;
   JWT_SECRET: string;
   CLAUDE_API_KEY: string;
+  ANTHROPIC_BASE_URL?: string;  // Anthropic-compatible endpoint override. WeaveHub AI: "https://ai.weavehub.app" with a wh_ai_ key in CLAUDE_API_KEY.
   OPENAI_API_KEY: string;
   RECEIPT_WORKFLOW: Workflow;
   GOOGLE_PLAY_WEBHOOK_SECRET: string;
