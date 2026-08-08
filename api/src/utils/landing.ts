@@ -586,31 +586,32 @@ tr{cursor:pointer}
             <p style="font-size:.82rem;font-weight:600;color:var(--slate);text-transform:uppercase;letter-spacing:.06em">WeaveHub AI usage</p>
             <p style="font-size:.95rem;margin-top:4px" id="weavehubUsageText">Loading…</p>
           </div>
-          <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <div style="display:flex;gap:8px;flex-wrap:wrap" id="whBuyRow">
             <button class="btn btn-sm btn-gold" id="whBuyStarter">Buy 500 scans · $9.99</button>
             <button class="btn btn-sm btn-outline" style="color:var(--navy);border-color:var(--navy)" id="whBuyGrowth">Buy 2,000 scans · $29.99</button>
           </div>
+          <button class="btn btn-sm btn-gold" id="whCreateKey" style="display:none">Create my key — includes 3 trial scans</button>
         </div>
         <p style="font-size:.75rem;color:var(--text-light);margin-top:8px">Credits never expire and are purchased through Stripe. Checkout returns you to this page.</p>
       </div>
       <div style="border-top:1px solid var(--cream-dark);padding-top:16px">
         <p style="font-size:.82rem;font-weight:600;color:var(--slate);text-transform:uppercase;letter-spacing:.06em;margin-bottom:12px">API Keys</p>
         <p style="font-size:.82rem;color:var(--text-light);margin-bottom:12px">Enter your own API keys or leave blank to use the platform default. Keys are encrypted at rest.</p>
-        <div class="form-group">
+        <div class="form-group" id="anthropicKeyGroup">
           <label>Anthropic API Key</label>
           <div style="display:flex;gap:8px"><input class="form-input" type="password" id="settAnthropicKey" placeholder="sk-ant-..."><button class="btn btn-sm btn-outline" style="color:var(--navy);border-color:var(--cream-dark);white-space:nowrap" id="saveAnthropicKey">Save</button><button class="btn btn-sm btn-danger" style="white-space:nowrap;display:none" id="clearAnthropicKey">Clear</button></div>
           <span style="font-size:.75rem;color:var(--text-light)" id="anthropicKeyStatus"></span>
         </div>
-        <div class="form-group">
+        <div class="form-group" id="openaiKeyGroup">
           <label>OpenAI API Key</label>
           <div style="display:flex;gap:8px"><input class="form-input" type="password" id="settOpenaiKey" placeholder="sk-..."><button class="btn btn-sm btn-outline" style="color:var(--navy);border-color:var(--cream-dark);white-space:nowrap" id="saveOpenaiKey">Save</button><button class="btn btn-sm btn-danger" style="white-space:nowrap;display:none" id="clearOpenaiKey">Clear</button></div>
           <span style="font-size:.75rem;color:var(--text-light)" id="openaiKeyStatus"></span>
         </div>
-        <div class="form-group">
+        <div class="form-group" id="weavehubKeyGroup">
           <label>WeaveHub AI Key</label>
           <div style="display:flex;gap:8px"><input class="form-input" type="password" id="settWeavehubKey" placeholder="wh_ai_..."><button class="btn btn-sm btn-outline" style="color:var(--navy);border-color:var(--cream-dark);white-space:nowrap" id="saveWeavehubKey">Save</button><button class="btn btn-sm btn-danger" style="white-space:nowrap;display:none" id="clearWeavehubKey">Clear</button></div>
           <span style="font-size:.75rem;color:var(--text-light)" id="weavehubKeyStatus"></span>
-          <span style="font-size:.75rem;color:var(--text-light)">Don't have one? <a href="https://weavehub.app/ai" target="_blank" rel="noopener" style="color:var(--gold-dim)">Get a key at weavehub.app/ai</a> — new keys include 3 trial scans.</span>
+          <span style="font-size:.75rem;color:var(--text-light)">Moving from another instance? Paste its key here — otherwise use "Create my key" above and it's saved automatically.</span>
         </div>
       </div>
     </div>
@@ -2152,9 +2153,11 @@ async function loadSettings(){
         var val=this.value;
         radios.forEach(function(x){x.closest('label').style.borderColor=x.value===val?'var(--gold)':'var(--cream-dark)';x.closest('label').style.background=x.value===val?'rgba(201,168,76,.05)':''});
         try{await api('/api/auth/preferences',{method:'PUT',body:{ai_provider:val}});U.ai_provider=val;toast('AI provider updated to '+(val==='anthropic'?'Anthropic Claude':val==='openai'?'OpenAI GPT-4o':'WeaveHub AI'))}catch(e){toast(e.message,'error')}
+        updateKeyVisibility(val);
         updateWeavehubPanel();
       });
     });
+    updateKeyVisibility(prov);
     // API Key status indicators
     if(U.anthropic_api_key){$('anthropicKeyStatus').textContent='Custom key is set';$('anthropicKeyStatus').style.color='var(--green)';$('clearAnthropicKey').style.display=''}
     else{$('anthropicKeyStatus').textContent='Using platform default';$('clearAnthropicKey').style.display='none'}
@@ -2165,12 +2168,29 @@ async function loadSettings(){
     updateWeavehubPanel();
   }
 }
-/** Show the usage/buy panel when WeaveHub AI is selected or a key is saved. */
+/** Only the selected provider's key field is shown. */
+function updateKeyVisibility(prov){
+  var map={anthropic:'anthropicKeyGroup',openai:'openaiKeyGroup',weavehub:'weavehubKeyGroup'};
+  Object.keys(map).forEach(function(k){
+    var g=$(map[k]);if(g)g.style.display=(k===prov)?'':'none';
+  });
+}
+/** Show the usage/buy panel when WeaveHub AI is selected or a key is saved.
+    Without a key it offers one-click key creation (server-side, key never
+    shown); with a key it shows usage + buy buttons. */
 async function updateWeavehubPanel(){
   var panel=$('weavehubAiPanel');if(!panel)return;
   var show=(U&&(U.ai_provider==='weavehub'||U.weavehub_ai_key));
   panel.style.display=show?'':'none';
   if(!show)return;
+  var hasKey=!!(U&&U.weavehub_ai_key);
+  $('whCreateKey').style.display=hasKey?'none':'';
+  $('whBuyRow').style.display=hasKey?'':'none';
+  if(!hasKey){
+    $('weavehubUsageText').textContent='No key yet — create one to get started. New accounts include 3 trial scans.';
+    $('weavehubUsageText').style.color='var(--navy)';
+    return;
+  }
   try{
     var u=await api('/api/ai/usage');
     var parts=['Credits: '+u.credit_balance];
@@ -2179,6 +2199,17 @@ async function updateWeavehubPanel(){
     $('weavehubUsageText').textContent=parts.join(' · ');
     $('weavehubUsageText').style.color=u.remaining>0?'var(--navy)':'var(--red)';
   }catch(e){$('weavehubUsageText').textContent=e.message}
+}
+async function createWeavehubKey(){
+  var btn=$('whCreateKey');btn.disabled=true;
+  try{
+    var d=await api('/api/ai/create-key',{method:'POST',body:{}});
+    U.weavehub_ai_key=true;
+    $('weavehubKeyStatus').textContent='Key is set';$('weavehubKeyStatus').style.color='var(--green)';$('clearWeavehubKey').style.display='';
+    toast('Key created'+(d.trial_scans?' — '+d.trial_scans+' trial scans included':''));
+    updateWeavehubPanel();
+  }catch(e){toast(e.message,'error')}
+  btn.disabled=false;
 }
 async function weavehubBuy(pack){
   try{
@@ -2269,6 +2300,7 @@ $('clearWeavehubKey').addEventListener('click',async function(){
 });
 $('whBuyStarter').addEventListener('click',function(){weavehubBuy('starter')});
 $('whBuyGrowth').addEventListener('click',function(){weavehubBuy('growth')});
+$('whCreateKey').addEventListener('click',createWeavehubKey);
 if(location.hash.indexOf('ai_topup=success')>=0){toast('Payment received — credits will appear in a few seconds');history.replaceState(null,'','#settings')}
 if(location.hash.indexOf('ai_topup=cancelled')>=0){toast('Checkout cancelled — no charge was made','error');history.replaceState(null,'','#settings')}
 $('changePwdBtn').addEventListener('click',async function(){
