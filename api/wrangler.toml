@@ -77,3 +77,10 @@ crons = ["0 6 * * *", "*/10 * * * *", "0 7 1 * *"]
 # Upload size limit for receipt images (10 MB)
 [limits]
 cpu_ms = 30000
+
+# --- Hosted AI (optional) -----------------------------------------------
+# No Anthropic/OpenAI key? Use WeaveHub AI: metered, pay-as-you-go receipt
+# extraction hosted by WeaveHub. Get a key at https://weavehub.app/ai, then
+# uncomment the line below and set the key as your CLAUDE_API_KEY secret:
+#   npx wrangler secret put CLAUDE_API_KEY   (paste the wh_ai_... key)
+# ANTHROPIC_BASE_URL = "https://ai.weavehub.app"

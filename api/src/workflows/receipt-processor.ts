@@ -1,5 +1,5 @@
 import { Env, AiProvider } from '../types';
-import { analyzeReceiptImage, analyzeReceiptPdf, analyzeReceiptEmail } from '../services/receipt-analyzer';
+import { analyzeReceiptImage, analyzeReceiptPdf, analyzeReceiptEmail, setAnthropicBaseUrl } from '../services/receipt-analyzer';
 import { generateId, decryptValue } from '../utils/crypto';
 import { WorkflowEntrypoint, WorkflowEvent, WorkflowStep } from 'cloudflare:workers';
 
@@ -141,6 +141,7 @@ export class ReceiptProcessorWorkflow extends WorkflowEntrypoint<Env, ReceiptWor
             throw new Error('No image or email body provided');
           }
 
+          setAnthropicBaseUrl(this.env.ANTHROPIC_BASE_URL);
           const runOnce = async (prov: AiProvider, key: string) => {
             if (input.kind === 'pdf') return analyzeReceiptPdf(input.data, key, prov);
             if (input.kind === 'image') return analyzeReceiptImage(input.data, input.contentType, key, prov);

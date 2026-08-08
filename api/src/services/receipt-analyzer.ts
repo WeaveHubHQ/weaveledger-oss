@@ -78,8 +78,17 @@ async function analyzeWithAnthropicPdf(pdfData: ArrayBuffer, apiKey: string): Pr
   }]);
 }
 
+// Anthropic-compatible endpoint. Self-hosters using the hosted "WeaveHub AI"
+// provider point this at https://ai.weavehub.app (with a wh_ai_ key in
+// CLAUDE_API_KEY) via env.ANTHROPIC_BASE_URL — see setAnthropicBaseUrl.
+let anthropicBaseUrl = 'https://api.anthropic.com';
+
+export function setAnthropicBaseUrl(url?: string): void {
+  if (url) anthropicBaseUrl = url.replace(/\/+$/, '');
+}
+
 async function callAnthropic(apiKey: string, messages: unknown[]): Promise<ReceiptAnalysis> {
-  const response = await fetch('https://api.anthropic.com/v1/messages', {
+  const response = await fetch(`${anthropicBaseUrl}/v1/messages`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
