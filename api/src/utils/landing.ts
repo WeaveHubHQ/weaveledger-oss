@@ -2346,11 +2346,17 @@ async function openReport(id){
     $('reportDetailCard').style.display='';
     $('reportDetailTitle').innerHTML=escH(r.title)+' '+reportBadge(r.status);
     var actions=$('reportDetailActions');actions.replaceChildren();
-    function actBtn(label,cls,fn){actions.appendChild(el('button',{className:'btn btn-sm '+cls,onclick:fn},label))}
+    function actBtn(label,cls,fn){
+      var b=el('button',{className:'btn btn-sm '+cls,onclick:fn},label);
+      // .btn-outline is styled for the dark hero; on the white card it needs navy.
+      if(cls.indexOf('btn-outline')>=0){b.style.color='var(--navy)';b.style.borderColor='var(--navy)'}
+      actions.appendChild(b);
+    }
     if(r.status==='draft')actBtn('+ Add Receipts','btn-gold',function(){showAddReceiptsModal(r)});
     if(r.status==='draft')actBtn('Mark Submitted','btn-outline',function(){setReportStatus(r.id,'submitted')});
     if(r.status==='submitted'){actBtn('Mark Reimbursed','btn-gold',function(){setReportStatus(r.id,'reimbursed')});actBtn('Back to Draft','btn-outline',function(){setReportStatus(r.id,'draft')})}
     if(r.status==='reimbursed')actBtn('Reopen','btn-outline',function(){setReportStatus(r.id,'submitted')});
+    actBtn('PDF','btn-outline',function(){openReportPrintView(r)});
     actBtn('CSV','btn-outline',function(){downloadReportCsv(r)});
     actBtn('Delete','btn-danger',function(){deleteReport(r)});
     var html='';
@@ -2431,6 +2437,71 @@ async function deleteReport(r){
   if(!confirm('Delete report "'+r.title+'"? Receipts are kept.'))return;
   var bookId=getBookId();
   try{await api('/api/books/'+encodeURIComponent(bookId)+'/reports/'+encodeURIComponent(r.id),{method:'DELETE'});openReportId=null;$('reportDetailCard').style.display='none';toast('Report deleted');loadReports()}catch(e){toast(e.message,'error')}
+}
+/** Open a print-optimized report view in a new tab: report table + receipt
+    image appendix. The browser's print dialog does "Save as PDF", which is
+    the submittable deliverable (mirrors the iOS PDF export, incl. 40-image
+    appendix cap). */
+async function openReportPrintView(r){
+  var bookId=getBookId();if(!bookId)return;
+  var w=window.open('','_blank');
+  if(!w){toast('Allow pop-ups for this site to view the PDF','error');return}
+  w.document.title=r.title+' — Expense Report';
+  w.document.body.innerHTML='<p style="font-family:sans-serif;padding:24px">Preparing report&hellip;</p>';
+  try{
+    var receipts=r.receipts||[];
+    var maxImages=40;
+    var withImages=receipts.filter(function(rc){return rc.image_key});
+    var omitted=Math.max(0,withImages.length-maxImages);
+    var imgs={};
+    await Promise.all(withImages.slice(0,maxImages).map(async function(rc){
+      try{
+        var resp=await fetch('/api/books/'+encodeURIComponent(bookId)+'/receipts/'+encodeURIComponent(rc.id)+'/image',{headers:{'Authorization':'Bearer '+T}});
+        if(resp.ok)imgs[rc.id]=URL.createObjectURL(await resp.blob());
+      }catch(e){/* image missing: row still prints */}
+    }));
+    var html='<style>'
+      +'body{font-family:Georgia,serif;color:#0A1628;margin:40px;max-width:720px}'
+      +'h1{font-size:1.6rem;margin:0 0 2px}'
+      +'.sub{color:#555;font-size:.85rem;margin-bottom:20px}'
+      +'table{width:100%;border-collapse:collapse;font-size:.9rem}'
+      +'th{text-align:left;border-bottom:2px solid #0A1628;padding:6px 8px;font-size:.75rem;text-transform:uppercase;letter-spacing:.05em}'
+      +'td{border-bottom:1px solid #ddd;padding:8px}'
+      +'td.amt,th.amt{text-align:right;font-variant-numeric:tabular-nums}'
+      +'.total td{font-weight:bold;border-bottom:none;border-top:2px solid #0A1628}'
+      +'.appendix{page-break-before:always}'
+      +'.appendix h2{font-size:1.1rem}'
+      +'figure{margin:0 0 24px;page-break-inside:avoid}'
+      +'figure img{max-width:100%;max-height:640px;border:1px solid #ccc}'
+      +'figcaption{font-size:.8rem;color:#555;margin-top:4px}'
+      +'.note{font-size:.8rem;color:#555}'
+      +'@media print{body{margin:12mm}}'
+      +'</style>';
+    html+='<h1>'+escH(r.title)+'</h1>';
+    html+='<div class="sub">Expense report &middot; '+escH(r.status)+' &middot; generated '+new Date().toLocaleDateString()+(r.notes?' &middot; '+escH(r.notes):'')+'</div>';
+    html+='<table><thead><tr><th>Date</th><th>Merchant</th><th>Category</th><th class="amt">Amount</th></tr></thead><tbody>';
+    receipts.forEach(function(rc){
+      html+='<tr><td>'+escH(rc.date||'')+'</td><td>'+escH(rc.merchant||'Unknown')+'</td><td>'+escH(rc.category||'')+'</td><td class="amt">'+fmtCur(rc.amount,rc.currency)+'</td></tr>';
+    });
+    html+='<tr class="total"><td colspan="3">Total</td><td class="amt">'+reportTotalsText(r.totals)+'</td></tr>';
+    html+='</tbody></table>';
+    var shown=withImages.slice(0,maxImages).filter(function(rc){return imgs[rc.id]});
+    if(shown.length){
+      html+='<div class="appendix"><h2>Receipts ('+shown.length+')</h2>';
+      shown.forEach(function(rc){
+        var cap=[rc.merchant||'Unknown',rc.date||'',fmtCur(rc.amount,rc.currency)].filter(Boolean).join(' — ');
+        html+='<figure><img src="'+imgs[rc.id]+'" alt="'+escH(cap)+'"><figcaption>'+escH(cap)+'</figcaption></figure>';
+      });
+      if(omitted>0)html+='<p class="note">'+omitted+' additional receipt image'+(omitted===1?'':'s')+' omitted (appendix capped at '+maxImages+').</p>';
+      html+='</div>';
+    }
+    w.document.body.innerHTML=html;
+    var imgEls=Array.prototype.slice.call(w.document.images);
+    await Promise.all(imgEls.map(function(im){return im.complete?Promise.resolve():new Promise(function(res){im.onload=res;im.onerror=res})}));
+    w.focus();w.print();
+  }catch(e){
+    w.document.body.innerHTML='<p style="font-family:sans-serif;padding:24px">Failed to prepare report: '+escH(e.message)+'</p>';
+  }
 }
 async function downloadReportCsv(r){
   var bookId=getBookId();
