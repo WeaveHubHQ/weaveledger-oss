@@ -1,3 +1,4 @@
+import { startReceiptProcessing } from '../workflows/receipt-processor';
 import { Env } from '../types';
 import { generateId } from '../utils/crypto';
 import { error, success } from '../utils/response';
@@ -188,7 +189,7 @@ export async function deleteReceipt(request: Request, env: Env, userId: string, 
   return success(null, 'Receipt deleted');
 }
 
-export async function uploadReceiptImage(request: Request, env: Env, userId: string, bookId: string): Promise<Response> {
+export async function uploadReceiptImage(request: Request, env: Env, userId: string, bookId: string, waitUntil?: (p: Promise<unknown>) => void): Promise<Response> {
   if (!await canAccessBook(env.DB, userId, bookId, 'member')) {
     return error('Access denied', 403);
   }
@@ -247,10 +248,7 @@ export async function uploadReceiptImage(request: Request, env: Env, userId: str
     ).bind(receiptId, bookId, userId, source, fileKey).run();
 
     try {
-      await env.RECEIPT_WORKFLOW.create({
-        id: receiptId,
-        params: { receiptId, bookId, userId, imageKey: fileKey },
-      });
+      await startReceiptProcessing(env, receiptId, { receiptId, bookId, userId, imageKey: fileKey }, waitUntil);
     } catch (e) {
       await env.DB.prepare("UPDATE receipts SET status = 'processing' WHERE id = ?").bind(receiptId).run();
     }
@@ -312,7 +310,7 @@ export async function getReceiptAttachment(request: Request, env: Env, userId: s
   });
 }
 
-export async function retryReceipt(request: Request, env: Env, userId: string, bookId: string, receiptId: string): Promise<Response> {
+export async function retryReceipt(request: Request, env: Env, userId: string, bookId: string, receiptId: string, waitUntil?: (p: Promise<unknown>) => void): Promise<Response> {
   if (!await canAccessBook(env.DB, userId, bookId, 'member')) {
     return error('Access denied', 403);
   }
@@ -329,14 +327,11 @@ export async function retryReceipt(request: Request, env: Env, userId: string, b
   ).bind(receiptId).run();
 
   try {
-    await env.RECEIPT_WORKFLOW.create({
-      id: receiptId + '_retry_' + Date.now(),
-      params: {
-        receiptId, bookId, userId,
-        imageKey: receipt.image_key || undefined,
-        emailBody: receipt.raw_email || undefined,
-      },
-    });
+    await startReceiptProcessing(env, receiptId + '_retry_' + Date.now(), {
+      receiptId, bookId, userId,
+      imageKey: receipt.image_key || undefined,
+      emailBody: receipt.raw_email || undefined,
+    }, waitUntil);
   } catch {
     await env.DB.prepare("UPDATE receipts SET status = 'processing' WHERE id = ?").bind(receiptId).run();
   }

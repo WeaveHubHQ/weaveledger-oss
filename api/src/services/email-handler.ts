@@ -1,3 +1,4 @@
+import { startReceiptProcessing } from '../workflows/receipt-processor';
 import { Env } from '../types';
 import { generateId } from '../utils/crypto';
 
@@ -11,7 +12,7 @@ interface EmailMessage {
   forward(to: string): Promise<void>;
 }
 
-export async function handleInboundEmail(message: EmailMessage, env: Env): Promise<void> {
+export async function handleInboundEmail(message: EmailMessage, env: Env, waitUntil?: (p: Promise<unknown>) => void): Promise<void> {
   const from = message.from;
   const to = message.to;
   const subject = message.headers.get('subject') || 'No Subject';
@@ -121,11 +122,8 @@ export async function handleInboundEmail(message: EmailMessage, env: Env): Promi
     ).bind(receiptId, book.id, user.id, primaryKey, emailBody, JSON.stringify(storedAttachments)).run();
 
     try {
-      await env.RECEIPT_WORKFLOW.create({
-        id: receiptId,
-        params: { receiptId, bookId: book.id, userId: user.id, imageKey: primaryKey,
-          emailBody, emailSubject: subject, emailFrom: from },
-      });
+      await startReceiptProcessing(env, receiptId, { receiptId, bookId: book.id, userId: user.id, imageKey: primaryKey,
+        emailBody, emailSubject: subject, emailFrom: from }, waitUntil);
     } catch {
       await env.DB.prepare("UPDATE receipts SET status = 'processing' WHERE id = ?").bind(receiptId).run();
     }
@@ -137,13 +135,10 @@ export async function handleInboundEmail(message: EmailMessage, env: Env): Promi
     ).bind(receiptId, book.id, user.id, emailHtmlKey, emailBody, JSON.stringify(storedAttachments)).run();
 
     try {
-      await env.RECEIPT_WORKFLOW.create({
-        id: receiptId,
-        params: {
-          receiptId, bookId: book.id, userId: user.id,
-          emailBody, emailSubject: subject, emailFrom: from,
-        },
-      });
+      await startReceiptProcessing(env, receiptId, {
+        receiptId, bookId: book.id, userId: user.id,
+        emailBody, emailSubject: subject, emailFrom: from,
+      }, waitUntil);
     } catch {
       await env.DB.prepare("UPDATE receipts SET status = 'processing' WHERE id = ?").bind(receiptId).run();
     }

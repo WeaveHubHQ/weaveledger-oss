@@ -5,16 +5,16 @@ export interface Env {
   CLAUDE_API_KEY: string;
   ANTHROPIC_BASE_URL?: string;  // Anthropic-compatible endpoint override. WeaveHub AI: "https://ai.weavehub.app" with a wh_ai_ key in CLAUDE_API_KEY.
   OPENAI_API_KEY: string;
-  RECEIPT_WORKFLOW: Workflow;
+  RECEIPT_WORKFLOW?: Workflow;            // absent on platform (dispatch-namespace) tenant workers — inline processing is used
+  DISPATCH_SECRET?: string;               // platform mode: authenticates internal calls from the dispatcher
+  HOSTED_PLATFORM?: string;               // "1" on hosted tenants: iOS app entitlement is included in the plan
   GOOGLE_PLAY_WEBHOOK_SECRET: string;
-  SEND_EMAIL: { send: (message: OutboundEmail) => Promise<void> };
+  SEND_EMAIL?: { send: (message: OutboundEmail) => Promise<void> };  // absent on platform tenant workers
   SUBSCRIPTION_ENFORCEMENT?: string;  // "licensing" | "apple" | "none" (default: treat as "none")
+  REGISTRATION?: string;              // "open" (default) | "first_user" | "invite" — who may create accounts
   APPLE_BUNDLE_ID?: string;           // "app.weavehub.WeaveLedger"
   LICENSING_URL?: string;             // "https://licensing.weavehub.app" (for SUBSCRIPTION_ENFORCEMENT=licensing)
   LICENSING_API_KEY?: string;         // Shared secret for authenticating with the licensing worker
-  ALLOWED_ORIGIN?: string;            // Override default CORS origin for a custom web frontend
-  APP_URL?: string;                   // Base URL used in password-reset / verification emails
-  REGISTRATION?: string;              // "open" (default) | "first_user" | "invite" — who may create accounts
 }
 
 // Cloudflare Email Service (April 2026 public beta) outbound message shape.
