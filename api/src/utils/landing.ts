@@ -425,8 +425,13 @@ tr{cursor:pointer}
     <input class="filter-input" type="date" id="dateFromFilter" title="From date">
     <input class="filter-input" type="date" id="dateToFilter" title="To date">
   </div>
+  <div id="selectionBar" style="display:none;align-items:center;gap:12px;background:rgba(201,168,76,.12);border:1px solid rgba(201,168,76,.4);border-radius:10px;padding:10px 14px;margin-bottom:12px">
+    <span id="selCount" style="font-weight:600;font-size:.85rem"></span>
+    <button class="btn btn-gold btn-sm" id="addSelToReportBtn">Add to Report</button>
+    <button class="btn btn-outline btn-sm" id="clearSelBtn" style="color:var(--navy);border-color:var(--cream-dark)">Clear</button>
+  </div>
   <div class="card" style="padding:0;overflow:hidden">
-    <div class="table-wrap"><table><thead><tr><th>Date</th><th>Merchant</th><th>Category</th><th>Amount</th><th>Source</th><th>Status</th></tr></thead><tbody id="receiptsTable"></tbody></table></div>
+    <div class="table-wrap"><table><thead><tr><th style="width:34px"></th><th>Date</th><th>Merchant</th><th>Category</th><th>Amount</th><th>Source</th><th>Status</th></tr></thead><tbody id="receiptsTable"></tbody></table></div>
     <div class="pagination" id="receiptsPagination"></div>
   </div>
 </div>
@@ -1404,7 +1409,7 @@ async function loadReceipts(page){
   curPage=page||1;
   var bookId=$('receiptBookFilter').value;
   if(!bookId&&books.length){bookId=books[0].id;$('receiptBookFilter').value=bookId}
-  if(!bookId){$('receiptsTable').replaceChildren(el('tr',null,[el('td',{colspan:'6',className:'empty'},'Select or create a book first')]));return}
+  if(!bookId){$('receiptsTable').replaceChildren(el('tr',null,[el('td',{colspan:'7',className:'empty'},'Select or create a book first')]));return}
   var pageSize=parseInt(localStorage.getItem('wl_pageSize'))||10;
   var params='?page='+curPage+'&limit='+pageSize;
   var search=$('searchFilter').value.trim();if(search)params+='&search='+encodeURIComponent(search);
@@ -1414,22 +1419,48 @@ async function loadReceipts(page){
   var dt=$('dateToFilter').value;if(dt)params+='&date_to='+dt;
   var book=books.find(function(b){return b.id===bookId});
   $('receiptsSubtitle').textContent=book?book.name+' receipts':'All receipts';
+  resetSelectionForBook(bookId);
   try{
     var d=await api('/api/books/'+encodeURIComponent(bookId)+'/receipts'+params);
     receipts=d.receipts||d||[];var pg=d.pagination;totalPages=pg?pg.pages:1;
     renderReceipts(receipts);renderPagination(pg);
-  }catch(e){$('receiptsTable').replaceChildren(el('tr',null,[el('td',{colspan:'6',className:'loading'},e.message)]))}
+  }catch(e){$('receiptsTable').replaceChildren(el('tr',null,[el('td',{colspan:'7',className:'loading'},e.message)]))}
 }
 ['receiptBookFilter','categoryFilter','statusFilter'].forEach(function(id){$(id).addEventListener('change',function(){loadReceipts(1)})});
 $('searchFilter').addEventListener('input',debounce(function(){loadReceipts(1)},400));
 $('dateFromFilter').addEventListener('change',function(){loadReceipts(1)});
 $('dateToFilter').addEventListener('change',function(){loadReceipts(1)});
 
+var selectedReceiptIds={};
+var selectionBookId=null;
+function resetSelectionForBook(bookId){
+  if(selectionBookId!==bookId){selectionBookId=bookId;selectedReceiptIds={};updateSelectionBar()}
+}
+function updateSelectionBar(){
+  var n=Object.keys(selectedReceiptIds).length;
+  $('selectionBar').style.display=n?'flex':'none';
+  $('selCount').textContent=n+' selected';
+}
+function toggleReceiptSelection(id,checked){
+  if(checked)selectedReceiptIds[id]=true;else delete selectedReceiptIds[id];
+  updateSelectionBar();
+}
 function renderReceipts(recs){
   var t=$('receiptsTable');t.replaceChildren();
-  if(!recs.length){t.appendChild(el('tr',null,[el('td',{colspan:'6',style:{textAlign:'center',padding:'40px',color:'var(--text-light)'}},'No receipts found')]));return}
+  if(!recs.length){t.appendChild(el('tr',null,[el('td',{colspan:'7',style:{textAlign:'center',padding:'40px',color:'var(--text-light)'}},'No receipts found')]));return}
   recs.forEach(function(r){
+    var cbCell;
+    if(r.status==='completed'){
+      var cb=el('input',{type:'checkbox'});
+      cb.checked=!!selectedReceiptIds[r.id];
+      cb.addEventListener('click',function(ev){ev.stopPropagation();toggleReceiptSelection(r.id,this.checked)});
+      cbCell=el('td',null,[cb]);
+      cbCell.addEventListener('click',function(ev){ev.stopPropagation()});
+    }else{
+      cbCell=el('td',null,'');
+    }
     t.appendChild(el('tr',{onclick:function(){openReceipt(r.book_id,r.id)}},[
+      cbCell,
       el('td',null,fmtDate(r.date)),
       el('td',{style:{fontWeight:'500'}},r.merchant||'--'),
       el('td',null,r.category||'--'),
@@ -1451,6 +1482,58 @@ function renderPagination(pg){
     el('button',{className:'btn btn-sm btn-outline',style:{color:'var(--navy)',borderColor:'var(--cream-dark)'},disabled:pg.page<=1,onclick:function(){loadReceipts(pg.page-1)}},'Previous'),
     el('button',{className:'btn btn-sm btn-outline',style:{color:'var(--navy)',borderColor:'var(--cream-dark)'},disabled:pg.page>=pg.pages,onclick:function(){loadReceipts(pg.page+1)}},'Next')
   ]));
+}
+$('clearSelBtn').addEventListener('click',function(){selectedReceiptIds={};updateSelectionBar();renderReceipts(receipts)});
+$('addSelToReportBtn').addEventListener('click',function(){
+  var ids=Object.keys(selectedReceiptIds);
+  if(!ids.length)return;
+  showReportPickerModal(ids);
+});
+async function showReportPickerModal(receiptIds){
+  var bookId=$('receiptBookFilter').value||getBookId();
+  if(!bookId){toast('No book selected','error');return}
+  $('modalTitle').textContent='Add '+receiptIds.length+' to Report';
+  var body=$('modalBody');body.replaceChildren(el('div',{className:'loading'},'Loading reports...'));
+  $('modalFooter').replaceChildren(el('button',{className:'btn btn-outline',style:{color:'var(--navy)',borderColor:'var(--cream-dark)'},onclick:closeModal},'Cancel'));
+  openModal();
+  async function addTo(reportId){
+    try{
+      await api('/api/books/'+encodeURIComponent(bookId)+'/reports/'+encodeURIComponent(reportId)+'/items',{method:'POST',body:{receipt_ids:receiptIds}});
+      toast('Added '+receiptIds.length+' receipt'+(receiptIds.length===1?'':'s')+' to report');
+      selectedReceiptIds={};updateSelectionBar();renderReceipts(receipts);closeModal();
+    }catch(e){toast(e.message,'error')}
+  }
+  try{
+    var rs=await api('/api/books/'+encodeURIComponent(bookId)+'/reports');
+    var drafts=rs.filter(function(r){return r.status==='draft'});
+    body.replaceChildren();
+    if(drafts.length){
+      body.appendChild(el('div',{style:{fontSize:'.78rem',fontWeight:'600',color:'var(--text-light)',textTransform:'uppercase',letterSpacing:'.04em',marginBottom:'6px'}},'Draft Reports'));
+      drafts.forEach(function(r){
+        var addBtnEl=el('button',{className:'btn btn-sm btn-gold',ariaLabel:'Add to '+r.title,onclick:function(ev){ev.stopPropagation();addTo(r.id)}},'Add');
+        var row=el('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'10px 12px',border:'1px solid var(--cream-dark)',borderRadius:'8px',marginBottom:'8px',cursor:'pointer'}},[
+          el('div',null,[el('div',{style:{fontWeight:'500'}},r.title),el('div',{style:{fontSize:'.75rem',color:'var(--text-light)'}},(r.item_count||0)+' receipt'+((r.item_count||0)===1?'':'s'))]),
+          addBtnEl
+        ]);
+        row.addEventListener('click',function(){addTo(r.id)});
+        body.appendChild(row);
+      });
+      body.appendChild(el('div',{style:{margin:'14px 0 6px',fontSize:'.78rem',fontWeight:'600',color:'var(--text-light)',textTransform:'uppercase',letterSpacing:'.04em'}},'Or create new'));
+    }else{
+      body.appendChild(el('p',{style:{fontSize:'.85rem',color:'var(--text-light)',marginBottom:'10px'}},'No draft reports yet — create one:'));
+    }
+    body.appendChild(formGroup('New report title','text','pickerReportTitle','','Denver trip - March'));
+    $('modalFooter').replaceChildren(
+      el('button',{className:'btn btn-outline',style:{color:'var(--navy)',borderColor:'var(--cream-dark)'},onclick:closeModal},'Cancel'),
+      el('button',{className:'btn btn-gold',onclick:async function(){
+        var t=$('pickerReportTitle').value.trim();if(!t){toast('Enter a title','error');return}
+        try{
+          var created=await api('/api/books/'+encodeURIComponent(bookId)+'/reports',{method:'POST',body:{title:t}});
+          await addTo(created.id);
+        }catch(e){toast(e.message,'error')}
+      }},'Create & Add')
+    );
+  }catch(e){body.replaceChildren(el('div',{className:'empty'},e.message))}
 }
 function statusBadge(s){return el('span',{className:'status-badge status-'+(s||'pending')},(s||'pending'))}
 function sourceBadge(s){return el('span',{className:'source-badge'},(s||'manual'))}
@@ -2243,7 +2326,7 @@ async function loadReports(){
   try{
     var rs=await api('/api/books/'+encodeURIComponent(bookId)+'/reports');
     var list=$('reportList');
-    if(!rs.length){list.innerHTML='<div class="empty"><div class="empty-icon">&#x1F4C4;</div>No reports yet. Click + New Report, then add receipts from the Expenses tab in the iOS app.</div>';$('reportDetailCard').style.display='none';openReportId=null;return}
+    if(!rs.length){list.innerHTML='<div class="empty"><div class="empty-icon">&#x1F4C4;</div>No reports yet. Click + New Report, then add receipts here or from the Expenses page.</div>';$('reportDetailCard').style.display='none';openReportId=null;return}
     var html='';
     rs.forEach(function(r){
       html+='<div class="report-row" data-rid="'+escH(r.id)+'" style="display:flex;justify-content:space-between;align-items:center;padding:12px 0;border-bottom:1px solid rgba(10,22,40,.04);cursor:pointer">'
@@ -2264,7 +2347,8 @@ async function openReport(id){
     $('reportDetailTitle').innerHTML=escH(r.title)+' '+reportBadge(r.status);
     var actions=$('reportDetailActions');actions.replaceChildren();
     function actBtn(label,cls,fn){actions.appendChild(el('button',{className:'btn btn-sm '+cls,onclick:fn},label))}
-    if(r.status==='draft')actBtn('Mark Submitted','btn-gold',function(){setReportStatus(r.id,'submitted')});
+    if(r.status==='draft')actBtn('+ Add Receipts','btn-gold',function(){showAddReceiptsModal(r)});
+    if(r.status==='draft')actBtn('Mark Submitted','btn-outline',function(){setReportStatus(r.id,'submitted')});
     if(r.status==='submitted'){actBtn('Mark Reimbursed','btn-gold',function(){setReportStatus(r.id,'reimbursed')});actBtn('Back to Draft','btn-outline',function(){setReportStatus(r.id,'draft')})}
     if(r.status==='reimbursed')actBtn('Reopen','btn-outline',function(){setReportStatus(r.id,'submitted')});
     actBtn('CSV','btn-outline',function(){downloadReportCsv(r)});
@@ -2272,7 +2356,7 @@ async function openReport(id){
     var html='';
     if(r.notes)html+='<p style="color:var(--text-light);font-size:.85rem;margin-bottom:10px">'+escH(r.notes)+'</p>';
     var receipts=r.receipts||[];
-    if(!receipts.length)html+='<div class="empty">No receipts on this report yet. Add them from the Expenses tab in the iOS app.</div>';
+    if(!receipts.length)html+='<div class="empty">No receipts on this report yet. Click + Add Receipts above, or select them on the Expenses page.</div>';
     receipts.forEach(function(rc){
       html+='<div style="display:flex;justify-content:space-between;align-items:center;padding:10px 0;border-bottom:1px solid rgba(10,22,40,.04)">'
         +'<div><div style="font-weight:500">'+escH(rc.merchant||'Unknown')+'</div><div style="font-size:.75rem;color:var(--text-light)">'+escH(rc.date||'')+' &middot; '+escH(rc.category||'')+'</div></div>'
@@ -2284,6 +2368,56 @@ async function openReport(id){
     $('reportDetail').innerHTML=html;
     qa('.rm-item').forEach(function(b){b.addEventListener('click',function(ev){ev.stopPropagation();removeReportItem(r.id,this.dataset.rcid)})});
   }catch(e){toast(e.message,'error')}
+}
+async function showAddReceiptsModal(report){
+  var bookId=getBookId();if(!bookId)return;
+  var onReport={};(report.receipts||[]).forEach(function(rc){onReport[rc.id]=true});
+  var picked={};
+  $('modalTitle').textContent='Add Receipts to "'+report.title+'"';
+  var body=$('modalBody');
+  var search=el('input',{className:'filter-input',type:'text',placeholder:'Search merchant...',style:{width:'100%',marginBottom:'10px'}});
+  var listWrap=el('div',{style:{maxHeight:'320px',overflowY:'auto'}},[el('div',{className:'loading'},'Loading receipts...')]);
+  body.replaceChildren(search,listWrap);
+  var addBtn=el('button',{className:'btn btn-gold',disabled:true,onclick:async function(){
+    var ids=Object.keys(picked);if(!ids.length)return;
+    try{
+      await api('/api/books/'+encodeURIComponent(bookId)+'/reports/'+encodeURIComponent(report.id)+'/items',{method:'POST',body:{receipt_ids:ids}});
+      toast('Added '+ids.length+' receipt'+(ids.length===1?'':'s'));
+      closeModal();loadReports();
+    }catch(e){toast(e.message,'error')}
+  }},'Add (0)');
+  $('modalFooter').replaceChildren(
+    el('button',{className:'btn btn-outline',style:{color:'var(--navy)',borderColor:'var(--cream-dark)'},onclick:closeModal},'Cancel'),
+    addBtn
+  );
+  function refreshAddBtn(){var n=Object.keys(picked).length;addBtn.textContent='Add ('+n+')';addBtn.disabled=!n}
+  async function fetchList(){
+    var params='?status=completed&limit=50&page=1';
+    var q=search.value.trim();if(q)params+='&search='+encodeURIComponent(q);
+    try{
+      var d=await api('/api/books/'+encodeURIComponent(bookId)+'/receipts'+params);
+      var recs=(d.receipts||[]).filter(function(rc){return !onReport[rc.id]});
+      listWrap.replaceChildren();
+      if(!recs.length){listWrap.appendChild(el('div',{className:'empty'},'No completed receipts available to add'));return}
+      recs.forEach(function(rc){
+        var cb=el('input',{type:'checkbox',style:{marginRight:'10px'}});
+        cb.checked=!!picked[rc.id];
+        var row=el('label',{style:{display:'flex',alignItems:'center',padding:'8px 4px',borderBottom:'1px solid rgba(10,22,40,.05)',cursor:'pointer'}},[
+          cb,
+          el('div',{style:{flex:'1'}},[
+            el('div',{style:{fontWeight:'500',fontSize:'.88rem'}},rc.merchant||'Unknown'),
+            el('div',{style:{fontSize:'.72rem',color:'var(--text-light)'}},(rc.date||'')+(rc.category?' · '+rc.category:''))
+          ]),
+          el('span',{style:{fontWeight:'600',fontSize:'.85rem'}},fmtCur(rc.amount,rc.currency))
+        ]);
+        cb.addEventListener('change',function(){if(this.checked)picked[rc.id]=true;else delete picked[rc.id];refreshAddBtn()});
+        listWrap.appendChild(row);
+      });
+    }catch(e){listWrap.replaceChildren(el('div',{className:'empty'},e.message))}
+  }
+  search.addEventListener('input',debounce(fetchList,350));
+  openModal();
+  fetchList();
 }
 async function setReportStatus(id,status){
   var bookId=getBookId();
