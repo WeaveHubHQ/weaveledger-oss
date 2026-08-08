@@ -13,6 +13,7 @@ export interface Env {
   LICENSING_API_KEY?: string;         // Shared secret for authenticating with the licensing worker
   ALLOWED_ORIGIN?: string;            // Override default CORS origin for a custom web frontend
   APP_URL?: string;                   // Base URL used in password-reset / verification emails
+  REGISTRATION?: string;              // "open" (default) | "first_user" | "invite" — who may create accounts
 }
 
 // Cloudflare Email Service (April 2026 public beta) outbound message shape.

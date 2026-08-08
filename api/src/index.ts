@@ -11,6 +11,8 @@ import { generateId } from './utils/crypto';
 import { listSubscriptions, getSubscriptionSummary, getSubscriptionForecast, syncSubscriptions, addGooglePlaySubscription, handleGooglePlayWebhook } from './routes/subscriptions';
 import { verifyAppSubscription, getAppSubscriptionStatus, restoreAppSubscription, handleAppleNotificationWebhook } from './routes/app-subscription';
 import { listBudgets, createBudget, updateBudget, deleteBudget, getBudgetStatus } from './routes/budgets';
+import { listReports, createReport, getReport, updateReport, deleteReport, addReportItems, removeReportItem, exportReport } from './routes/reports';
+import { uploadStatement, listStatements, getStatement, deleteStatement, matchStatementTransaction, unmatchStatementTransaction, ignoreStatementTransaction, createReceiptFromTransaction } from './routes/statements';
 import { listRecurringExpenses, createRecurringExpense, updateRecurringExpense, deleteRecurringExpense, advanceRecurringExpenses } from './routes/recurring-expenses';
 import { getTaxCategories, getTaxSettings, updateTaxSettings, getTaxSummary, getTaxEstimates } from './routes/tax';
 import { getProfitAndLoss } from './routes/pnl';
@@ -405,6 +407,66 @@ export default {
         const [, bookId, budgetId] = budgetMatch;
         if (method === 'PUT' || method === 'PATCH') return paid(() => updateBudget(request, env, userId, bookId, budgetId));
         if (method === 'DELETE') return paid(() => deleteBudget(request, env, userId, bookId, budgetId));
+      }
+
+      // Expense report routes (paid)
+      const reportExportMatch = path.match(/^\/api\/books\/([^/]+)\/reports\/([^/]+)\/export\/(csv|pdf)$/);
+      if (reportExportMatch && method === 'GET') {
+        const [, bookId, reportId, format] = reportExportMatch;
+        return paid(() => exportReport(request, env, userId, bookId, reportId, format as ExportFormat));
+      }
+
+      const reportItemsMatch = path.match(/^\/api\/books\/([^/]+)\/reports\/([^/]+)\/items$/);
+      if (reportItemsMatch && method === 'POST') {
+        return paid(() => addReportItems(request, env, userId, reportItemsMatch[1], reportItemsMatch[2]));
+      }
+
+      const reportItemMatch = path.match(/^\/api\/books\/([^/]+)\/reports\/([^/]+)\/items\/([^/]+)$/);
+      if (reportItemMatch && method === 'DELETE') {
+        const [, bookId, reportId, receiptId] = reportItemMatch;
+        return paid(() => removeReportItem(request, env, userId, bookId, reportId, receiptId));
+      }
+
+      const reportsMatch = path.match(/^\/api\/books\/([^/]+)\/reports$/);
+      if (reportsMatch) {
+        const bookId = reportsMatch[1];
+        if (method === 'GET') return paid(() => listReports(request, env, userId, bookId));
+        if (method === 'POST') return paid(() => createReport(request, env, userId, bookId));
+      }
+
+      const reportMatch = path.match(/^\/api\/books\/([^/]+)\/reports\/([^/]+)$/);
+      if (reportMatch) {
+        const [, bookId, reportId] = reportMatch;
+        if (method === 'GET') return paid(() => getReport(request, env, userId, bookId, reportId));
+        if (method === 'PUT' || method === 'PATCH') return paid(() => updateReport(request, env, userId, bookId, reportId));
+        if (method === 'DELETE') return paid(() => deleteReport(request, env, userId, bookId, reportId));
+      }
+
+      // Statement import + matching routes (paid)
+      const stmtTxnActionMatch = path.match(/^\/api\/books\/([^/]+)\/statements\/([^/]+)\/transactions\/([^/]+)\/(match|unmatch|ignore|create-receipt)$/);
+      if (stmtTxnActionMatch && method === 'POST') {
+        const [, bookId, stmtId, txnId, action] = stmtTxnActionMatch;
+        if (action === 'match') return paid(() => matchStatementTransaction(request, env, userId, bookId, stmtId, txnId));
+        if (action === 'unmatch') return paid(() => unmatchStatementTransaction(request, env, userId, bookId, stmtId, txnId));
+        if (action === 'ignore') return paid(() => ignoreStatementTransaction(request, env, userId, bookId, stmtId, txnId));
+        return paid(() => createReceiptFromTransaction(request, env, userId, bookId, stmtId, txnId));
+      }
+
+      const stmtUploadMatch = path.match(/^\/api\/books\/([^/]+)\/statements\/upload$/);
+      if (stmtUploadMatch && method === 'POST') {
+        return paid(() => uploadStatement(request, env, userId, stmtUploadMatch[1]));
+      }
+
+      const stmtsMatch = path.match(/^\/api\/books\/([^/]+)\/statements$/);
+      if (stmtsMatch && method === 'GET') {
+        return paid(() => listStatements(request, env, userId, stmtsMatch[1]));
+      }
+
+      const stmtMatch = path.match(/^\/api\/books\/([^/]+)\/statements\/([^/]+)$/);
+      if (stmtMatch) {
+        const [, bookId, stmtId] = stmtMatch;
+        if (method === 'GET') return paid(() => getStatement(request, env, userId, bookId, stmtId));
+        if (method === 'DELETE') return paid(() => deleteStatement(request, env, userId, bookId, stmtId));
       }
 
       // Recurring expense routes (paid)

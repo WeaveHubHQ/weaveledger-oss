@@ -22,6 +22,29 @@ export async function register(request: Request, env: Env): Promise<Response> {
     return error('Name must be 200 characters or fewer');
   }
 
+  // Self-hosting registration gate (env.REGISTRATION, default "open"):
+  //   "open"       — anyone can register
+  //   "first_user" — registration closes once any account exists (recommended
+  //                  for single-owner self-hosted instances)
+  //   "invite"     — the email must hold a pending book invitation
+  // Unrecognized values fail closed so a typo can't silently open registration.
+  const registrationMode = env.REGISTRATION || 'open';
+  if (registrationMode === 'first_user') {
+    const anyUser = await env.DB.prepare('SELECT 1 FROM users LIMIT 1').first();
+    if (anyUser) {
+      return error('Registration is closed on this server. The owner can set REGISTRATION = "open" or "invite" in wrangler.toml to allow new accounts.', 403);
+    }
+  } else if (registrationMode === 'invite') {
+    const invite = await env.DB.prepare(
+      "SELECT 1 FROM invitations WHERE email = ? AND status = 'pending' LIMIT 1"
+    ).bind(body.email.toLowerCase()).first();
+    if (!invite) {
+      return error('Registration is invite-only on this server. Ask an existing user to share a book with your email address first.', 403);
+    }
+  } else if (registrationMode !== 'open') {
+    return error('Registration is disabled: unrecognized REGISTRATION mode. Use "open", "first_user", or "invite".', 403);
+  }
+
   const existing = await env.DB.prepare('SELECT id FROM users WHERE email = ?').bind(body.email.toLowerCase()).first();
   if (existing) {
     return error('Email already registered', 409);

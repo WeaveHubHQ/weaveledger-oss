@@ -1,12 +1,13 @@
 {
   "name": "weaveledger-api",
-  "version": "2.1.5",
+  "version": "2.3.0",
   "private": true,
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "npx wrangler d1 migrations apply DB --remote && wrangler deploy",
     "db:migrate": "npx wrangler d1 migrations apply DB --remote",
-    "db:migrate:local": "npx wrangler d1 migrations apply DB --local"
+    "db:migrate:local": "npx wrangler d1 migrations apply DB --local",
+    "db:baseline": "npx wrangler d1 execute weaveledger-db --remote --file=./scripts/baseline-migrations.sql"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20240512.0",
