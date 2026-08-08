@@ -85,6 +85,15 @@ async function analyzeWithAnthropicPdf(pdfData: ArrayBuffer, apiKey: string, pro
 // CLAUDE_API_KEY) via env.ANTHROPIC_BASE_URL — see setAnthropicBaseUrl.
 let anthropicBaseUrl = 'https://api.anthropic.com';
 
+// Default model for receipt extraction. claude-sonnet-4-20250514 is retired
+// on newer Anthropic orgs (404s on the hosted-AI key); Sonnet 4.5 is the
+// available successor. Overridable per instance via env.ANTHROPIC_MODEL.
+let anthropicModel = 'claude-sonnet-4-5';
+
+export function setAnthropicModel(model?: string): void {
+  if (model) anthropicModel = model;
+}
+
 export function setAnthropicBaseUrl(url?: string): void {
   if (url) anthropicBaseUrl = url.replace(/\/+$/, '');
 }
@@ -101,7 +110,7 @@ async function callAnthropic(apiKey: string, messages: unknown[], provider: AiPr
     body: JSON.stringify({
       // 4096 tokens covers receipts with long descriptions or many line items.
       // 1024 was truncating mid-JSON for emailed invoices and producing unparseable output.
-      model: 'claude-sonnet-4-20250514',
+      model: anthropicModel,
       max_tokens: 4096,
       system: SYSTEM_PROMPT,
       messages,
