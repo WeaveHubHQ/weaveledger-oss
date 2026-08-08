@@ -1126,7 +1126,8 @@ function navigate(pg){
   qa('.page').forEach(function(p){p.classList.remove('active')});
   var p=$('pg-'+pg);if(p)p.classList.add('active');
   qa('.app-nav-links a').forEach(function(a){a.classList.toggle('active',a.dataset.page===pg)});
-  if(location.hash!=='#'+pg)history.replaceState(null,'','#'+pg);
+  var keepSub=(pg==='settings'&&location.hash.indexOf('#settings/')===0);
+  if(!keepSub&&location.hash!=='#'+pg)history.replaceState(null,'','#'+pg);
   if(pg==='dashboard')loadDashboard();
   if(pg==='expenses')loadReceipts();
   if(pg==='reports')loadReports();
@@ -1143,6 +1144,7 @@ function navigate(pg){
 qa('.settings-tab').forEach(function(t){t.addEventListener('click',function(e){
   e.preventDefault();var tab=this.dataset.stab;switchSettingsTab(tab)})});
 function switchSettingsTab(tab){
+  history.replaceState(null,'','#settings/'+tab);
   qa('.settings-tab').forEach(function(t){t.classList.toggle('active',t.dataset.stab===tab)});
   qa('.settings-panel').forEach(function(p){p.classList.remove('active')});
   var p=$('stab-'+tab);if(p)p.classList.add('active');
@@ -1155,9 +1157,12 @@ async function showApp(){
   $('landing').style.display='none';$('app').style.display='block';$('appEmail').textContent=E||'';
   try{U=await api('/api/auth/profile');$('appEmail').textContent=U.name||U.email||E}catch(e){}
   await fetchBooks();
-  var h=location.hash.replace('#','');
-  var validPages=['dashboard','expenses','income','subscriptions','budgets','recurring','tax','pnl','settings'];
+  var raw=location.hash.replace('#','').split('?')[0];
+  var parts=raw.split('/');
+  var h=parts[0];
+  var validPages=['dashboard','expenses','reports','income','subscriptions','budgets','recurring','tax','pnl','settings'];
   navigate(validPages.indexOf(h)!==-1?h:'dashboard');
+  if(h==='settings'&&parts[1])switchSettingsTab(parts[1]);
 }
 
 async function fetchBooks(){
@@ -2301,8 +2306,8 @@ $('clearWeavehubKey').addEventListener('click',async function(){
 $('whBuyStarter').addEventListener('click',function(){weavehubBuy('starter')});
 $('whBuyGrowth').addEventListener('click',function(){weavehubBuy('growth')});
 $('whCreateKey').addEventListener('click',createWeavehubKey);
-if(location.hash.indexOf('ai_topup=success')>=0){toast('Payment received — credits will appear in a few seconds');history.replaceState(null,'','#settings')}
-if(location.hash.indexOf('ai_topup=cancelled')>=0){toast('Checkout cancelled — no charge was made','error');history.replaceState(null,'','#settings')}
+if(location.hash.indexOf('ai_topup=success')>=0){toast('Payment received — credits will appear in a few seconds');history.replaceState(null,'','#settings/ai')}
+if(location.hash.indexOf('ai_topup=cancelled')>=0){toast('Checkout cancelled — no charge was made','error');history.replaceState(null,'','#settings/ai')}
 $('changePwdBtn').addEventListener('click',async function(){
   var cur=$('curPwd').value,np=$('newPwd').value,cp=$('conPwd').value;
   if(!cur||!np){toast('Fill in all fields','error');return}
@@ -2830,7 +2835,7 @@ async function loadPnl(){
 
 // INIT — must run after all DOM helpers and event listeners are set up
 if(T)showApp();
-window.addEventListener('hashchange',function(){if(T){var h=location.hash.replace('#','');if(h&&['dashboard','books','expenses','income','subscriptions','budgets','recurring','tax','exports','settings'].indexOf(h)!==-1)navigate(h)}});
+window.addEventListener('hashchange',function(){if(T){var raw=location.hash.replace('#','').split('?')[0];var parts=raw.split('/');var h=parts[0];if(h&&['dashboard','books','expenses','reports','income','subscriptions','budgets','recurring','tax','exports','settings'].indexOf(h)!==-1){navigate(h);if(h==='settings'&&parts[1])switchSettingsTab(parts[1])}}});
 })();
 </script>
 </body>

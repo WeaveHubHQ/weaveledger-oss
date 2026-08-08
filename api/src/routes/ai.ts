@@ -68,8 +68,8 @@ export async function createAiCheckout(request: Request, env: Env, userId: strin
     headers: { 'x-api-key': key, 'Content-Type': 'application/json' },
     body: JSON.stringify({
       pack: body.pack || 'starter',
-      success_url: `${origin}/#settings?ai_topup=success`,
-      cancel_url: `${origin}/#settings?ai_topup=cancelled`,
+      success_url: `${origin}/#settings/ai?ai_topup=success`,
+      cancel_url: `${origin}/#settings/ai?ai_topup=cancelled`,
     }),
   });
   const data = await resp.json<{ url?: string; pack?: string; scans?: number; error?: { message?: string } }>();
