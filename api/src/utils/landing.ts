@@ -574,6 +574,24 @@ tr{cursor:pointer}
           <strong style="font-size:.92rem;color:var(--navy)">OpenAI GPT-4o</strong>
           <p style="font-size:.78rem;color:var(--text-light);margin:4px 0 0 22px">GPT-4o — strong vision and PDF analysis</p>
         </label>
+        <label style="flex:1;min-width:200px;padding:16px;border:2px solid var(--cream-dark);border-radius:var(--radius);cursor:pointer;transition:all .2s" id="providerWeavehub">
+          <input type="radio" name="aiProvider" value="weavehub" style="margin-right:8px">
+          <strong style="font-size:.92rem;color:var(--navy)">WeaveHub AI</strong>
+          <p style="font-size:.78rem;color:var(--text-light);margin:4px 0 0 22px">Pay as you go — no provider account needed</p>
+        </label>
+      </div>
+      <div id="weavehubAiPanel" style="display:none;border:1px solid var(--gold);border-radius:var(--radius);padding:16px;margin-bottom:20px;background:rgba(201,168,76,.05)">
+        <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px">
+          <div>
+            <p style="font-size:.82rem;font-weight:600;color:var(--slate);text-transform:uppercase;letter-spacing:.06em">WeaveHub AI usage</p>
+            <p style="font-size:.95rem;margin-top:4px" id="weavehubUsageText">Loading…</p>
+          </div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap">
+            <button class="btn btn-sm btn-gold" id="whBuyStarter">Buy 500 scans · $9.99</button>
+            <button class="btn btn-sm btn-outline" style="color:var(--navy);border-color:var(--navy)" id="whBuyGrowth">Buy 2,000 scans · $29.99</button>
+          </div>
+        </div>
+        <p style="font-size:.75rem;color:var(--text-light);margin-top:8px">Credits never expire and are purchased through Stripe. Checkout returns you to this page.</p>
       </div>
       <div style="border-top:1px solid var(--cream-dark);padding-top:16px">
         <p style="font-size:.82rem;font-weight:600;color:var(--slate);text-transform:uppercase;letter-spacing:.06em;margin-bottom:12px">API Keys</p>
@@ -587,6 +605,12 @@ tr{cursor:pointer}
           <label>OpenAI API Key</label>
           <div style="display:flex;gap:8px"><input class="form-input" type="password" id="settOpenaiKey" placeholder="sk-..."><button class="btn btn-sm btn-outline" style="color:var(--navy);border-color:var(--cream-dark);white-space:nowrap" id="saveOpenaiKey">Save</button><button class="btn btn-sm btn-danger" style="white-space:nowrap;display:none" id="clearOpenaiKey">Clear</button></div>
           <span style="font-size:.75rem;color:var(--text-light)" id="openaiKeyStatus"></span>
+        </div>
+        <div class="form-group">
+          <label>WeaveHub AI Key</label>
+          <div style="display:flex;gap:8px"><input class="form-input" type="password" id="settWeavehubKey" placeholder="wh_ai_..."><button class="btn btn-sm btn-outline" style="color:var(--navy);border-color:var(--cream-dark);white-space:nowrap" id="saveWeavehubKey">Save</button><button class="btn btn-sm btn-danger" style="white-space:nowrap;display:none" id="clearWeavehubKey">Clear</button></div>
+          <span style="font-size:.75rem;color:var(--text-light)" id="weavehubKeyStatus"></span>
+          <span style="font-size:.75rem;color:var(--text-light)">Don't have one? <a href="https://weavehub.app/ai" target="_blank" rel="noopener" style="color:var(--gold-dim)">Get a key at weavehub.app/ai</a> — new keys include 3 trial scans.</span>
         </div>
       </div>
     </div>
@@ -2127,7 +2151,8 @@ async function loadSettings(){
       r.addEventListener('change',async function(){
         var val=this.value;
         radios.forEach(function(x){x.closest('label').style.borderColor=x.value===val?'var(--gold)':'var(--cream-dark)';x.closest('label').style.background=x.value===val?'rgba(201,168,76,.05)':''});
-        try{await api('/api/auth/preferences',{method:'PUT',body:{ai_provider:val}});U.ai_provider=val;toast('AI provider updated to '+(val==='anthropic'?'Anthropic Claude':'OpenAI GPT-4o'))}catch(e){toast(e.message,'error')}
+        try{await api('/api/auth/preferences',{method:'PUT',body:{ai_provider:val}});U.ai_provider=val;toast('AI provider updated to '+(val==='anthropic'?'Anthropic Claude':val==='openai'?'OpenAI GPT-4o':'WeaveHub AI'))}catch(e){toast(e.message,'error')}
+        updateWeavehubPanel();
       });
     });
     // API Key status indicators
@@ -2135,7 +2160,31 @@ async function loadSettings(){
     else{$('anthropicKeyStatus').textContent='Using platform default';$('clearAnthropicKey').style.display='none'}
     if(U.openai_api_key){$('openaiKeyStatus').textContent='Custom key is set';$('openaiKeyStatus').style.color='var(--green)';$('clearOpenaiKey').style.display=''}
     else{$('openaiKeyStatus').textContent='Using platform default';$('clearOpenaiKey').style.display='none'}
+    if(U.weavehub_ai_key){$('weavehubKeyStatus').textContent='Key is set';$('weavehubKeyStatus').style.color='var(--green)';$('clearWeavehubKey').style.display=''}
+    else{$('weavehubKeyStatus').textContent='No key saved';$('clearWeavehubKey').style.display='none'}
+    updateWeavehubPanel();
   }
+}
+/** Show the usage/buy panel when WeaveHub AI is selected or a key is saved. */
+async function updateWeavehubPanel(){
+  var panel=$('weavehubAiPanel');if(!panel)return;
+  var show=(U&&(U.ai_provider==='weavehub'||U.weavehub_ai_key));
+  panel.style.display=show?'':'none';
+  if(!show)return;
+  try{
+    var u=await api('/api/ai/usage');
+    var parts=['Credits: '+u.credit_balance];
+    if(u.monthly_quota_scans>0)parts.push('Monthly allowance: '+(u.effective_limit-u.scans_used)+' of '+u.effective_limit+' left');
+    parts.push('Total remaining: '+u.remaining+' scan'+(u.remaining===1?'':'s'));
+    $('weavehubUsageText').textContent=parts.join(' · ');
+    $('weavehubUsageText').style.color=u.remaining>0?'var(--navy)':'var(--red)';
+  }catch(e){$('weavehubUsageText').textContent=e.message}
+}
+async function weavehubBuy(pack){
+  try{
+    var d=await api('/api/ai/checkout',{method:'POST',body:{pack:pack}});
+    location.href=d.url;
+  }catch(e){toast(e.message,'error')}
 }
 function renderLinkedEmails(emails){
   var c=$('linkedEmailsList');if(!c)return;c.replaceChildren();
@@ -2210,6 +2259,18 @@ $('clearOpenaiKey').addEventListener('click',async function(){
   if(!confirm('Remove your custom OpenAI API key?'))return;
   try{await api('/api/auth/preferences',{method:'PUT',body:{openai_api_key:null}});U.openai_api_key=false;$('openaiKeyStatus').textContent='Using platform default';$('openaiKeyStatus').style.color='var(--text-light)';this.style.display='none';toast('OpenAI API key removed')}catch(e){toast(e.message,'error')}
 });
+$('saveWeavehubKey').addEventListener('click',async function(){
+  var key=$('settWeavehubKey').value.trim();if(!key){toast('Enter your wh_ai_ key','error');return}
+  try{await api('/api/auth/preferences',{method:'PUT',body:{weavehub_ai_key:key}});$('settWeavehubKey').value='';U.weavehub_ai_key=true;$('weavehubKeyStatus').textContent='Key is set';$('weavehubKeyStatus').style.color='var(--green)';$('clearWeavehubKey').style.display='';toast('WeaveHub AI key saved');updateWeavehubPanel()}catch(e){toast(e.message,'error')}
+});
+$('clearWeavehubKey').addEventListener('click',async function(){
+  if(!confirm('Remove your WeaveHub AI key?'))return;
+  try{await api('/api/auth/preferences',{method:'PUT',body:{weavehub_ai_key:null}});U.weavehub_ai_key=false;$('weavehubKeyStatus').textContent='No key saved';$('weavehubKeyStatus').style.color='var(--text-light)';this.style.display='none';toast('WeaveHub AI key removed');updateWeavehubPanel()}catch(e){toast(e.message,'error')}
+});
+$('whBuyStarter').addEventListener('click',function(){weavehubBuy('starter')});
+$('whBuyGrowth').addEventListener('click',function(){weavehubBuy('growth')});
+if(location.hash.indexOf('ai_topup=success')>=0){toast('Payment received — credits will appear in a few seconds');history.replaceState(null,'','#settings')}
+if(location.hash.indexOf('ai_topup=cancelled')>=0){toast('Checkout cancelled — no charge was made','error');history.replaceState(null,'','#settings')}
 $('changePwdBtn').addEventListener('click',async function(){
   var cur=$('curPwd').value,np=$('newPwd').value,cp=$('conPwd').value;
   if(!cur||!np){toast('Fill in all fields','error');return}

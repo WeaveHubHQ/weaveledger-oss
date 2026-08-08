@@ -28,7 +28,7 @@ export async function analyzeReceiptImage(
   if (provider === 'openai') {
     return analyzeWithOpenAIVision(imageData, contentType, apiKey);
   }
-  return analyzeWithAnthropicVision(imageData, contentType, apiKey);
+  return analyzeWithAnthropicVision(imageData, contentType, apiKey, provider);
 }
 
 export async function analyzeReceiptPdf(
@@ -37,7 +37,7 @@ export async function analyzeReceiptPdf(
   if (provider === 'openai') {
     return analyzeWithOpenAIPdf(pdfData, apiKey);
   }
-  return analyzeWithAnthropicPdf(pdfData, apiKey);
+  return analyzeWithAnthropicPdf(pdfData, apiKey, provider);
 }
 
 export async function analyzeReceiptEmail(
@@ -48,12 +48,14 @@ export async function analyzeReceiptEmail(
   if (provider === 'openai') {
     return callOpenAI(apiKey, [{ role: 'user', content: prompt }]);
   }
-  return callAnthropic(apiKey, [{ role: 'user', content: prompt }]);
+  return callAnthropic(apiKey, [{ role: 'user', content: prompt }], provider);
 }
 
-// --- Anthropic ---
+// --- Anthropic (and the Anthropic-compatible WeaveHub AI gateway) ---
 
-async function analyzeWithAnthropicVision(imageData: ArrayBuffer, contentType: string, apiKey: string): Promise<ReceiptAnalysis> {
+const WEAVEHUB_AI_URL = 'https://ai.weavehub.app';
+
+async function analyzeWithAnthropicVision(imageData: ArrayBuffer, contentType: string, apiKey: string, provider: AiProvider): Promise<ReceiptAnalysis> {
   const base64 = arrayBufferToBase64(imageData);
   const mediaType = contentType as 'image/jpeg' | 'image/png' | 'image/gif' | 'image/webp';
 
@@ -63,10 +65,10 @@ async function analyzeWithAnthropicVision(imageData: ArrayBuffer, contentType: s
       { type: 'image', source: { type: 'base64', media_type: mediaType, data: base64 } },
       { type: 'text', text: 'Please analyze this receipt and extract all relevant data.' },
     ],
-  }]);
+  }], provider);
 }
 
-async function analyzeWithAnthropicPdf(pdfData: ArrayBuffer, apiKey: string): Promise<ReceiptAnalysis> {
+async function analyzeWithAnthropicPdf(pdfData: ArrayBuffer, apiKey: string, provider: AiProvider): Promise<ReceiptAnalysis> {
   const base64 = arrayBufferToBase64(pdfData);
 
   return callAnthropic(apiKey, [{
@@ -75,7 +77,7 @@ async function analyzeWithAnthropicPdf(pdfData: ArrayBuffer, apiKey: string): Pr
       { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: base64 } },
       { type: 'text', text: 'Please analyze this receipt/invoice PDF and extract all relevant data.' },
     ],
-  }]);
+  }], provider);
 }
 
 // Anthropic-compatible endpoint. Self-hosters using the hosted "WeaveHub AI"
@@ -87,8 +89,9 @@ export function setAnthropicBaseUrl(url?: string): void {
   if (url) anthropicBaseUrl = url.replace(/\/+$/, '');
 }
 
-async function callAnthropic(apiKey: string, messages: unknown[]): Promise<ReceiptAnalysis> {
-  const response = await fetch(`${anthropicBaseUrl}/v1/messages`, {
+async function callAnthropic(apiKey: string, messages: unknown[], provider: AiProvider = 'anthropic'): Promise<ReceiptAnalysis> {
+  const baseUrl = provider === 'weavehub' ? WEAVEHUB_AI_URL : anthropicBaseUrl;
+  const response = await fetch(`${baseUrl}/v1/messages`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
