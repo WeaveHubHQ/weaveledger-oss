@@ -25,18 +25,17 @@ import { ExportFormat } from './types';
 
 export { ReceiptProcessorWorkflow } from './workflows/receipt-processor';
 
-export default {
-  async fetch(request: Request, env: Env): Promise<Response> {
+const worker = {
+  async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     // Handle CORS preflight — only respond with CORS headers for the allowed origin
     if (request.method === 'OPTIONS') {
       const reqOrigin = request.headers.get('Origin') || '';
-      const ALLOWED_ORIGIN = env.ALLOWED_ORIGIN || 'https://ledger.weavehub.app';
-      if (reqOrigin !== ALLOWED_ORIGIN) {
+      if (reqOrigin !== 'https://ledger.weavehub.app') {
         return new Response(null, { status: 204 });
       }
       return new Response(null, {
         headers: {
-          'Access-Control-Allow-Origin': ALLOWED_ORIGIN,
+          'Access-Control-Allow-Origin': 'https://ledger.weavehub.app',
           'Access-Control-Allow-Methods': 'GET, POST, PUT, PATCH, DELETE, OPTIONS',
           'Access-Control-Allow-Headers': 'Content-Type, Authorization',
           'Access-Control-Max-Age': '86400',
@@ -51,7 +50,7 @@ export default {
 
     // Add CORS headers only for allowed origins; omit entirely for unknown origins
     const origin = request.headers.get('Origin') || '';
-    const ALLOWED_ORIGIN = env.ALLOWED_ORIGIN || 'https://ledger.weavehub.app';
+    const ALLOWED_ORIGIN = 'https://ledger.weavehub.app';
     const isAllowedOrigin = origin === ALLOWED_ORIGIN;
     const addCors = (response: Response): Response => {
       if (!isAllowedOrigin) return response;
@@ -66,6 +65,40 @@ export default {
     };
 
     try {
+      // Platform-mode internal routes (dispatcher-to-tenant, secret-authed).
+      // Mounted only when a DISPATCH_SECRET is configured on this deployment.
+      if (path.startsWith('/internal/') && env.DISPATCH_SECRET) {
+        if (request.headers.get('x-dispatch-secret') !== env.DISPATCH_SECRET) {
+          return error('Forbidden', 403);
+        }
+        if (path === '/internal/email' && method === 'POST') {
+          const body = await request.json<{ from: string; to: string; subject?: string; raw_base64: string }>();
+          const rawBytes = Uint8Array.from(atob(body.raw_base64), c => c.charCodeAt(0));
+          const shim = {
+            from: body.from,
+            to: body.to,
+            rawSize: rawBytes.length,
+            headers: new Headers({ subject: body.subject || '' }),
+            raw: new Response(rawBytes).body as ReadableStream,
+            setReject: () => {},
+          };
+          // Await completion: the dispatcher's email handler is the one place
+          // that can retry, so surface failures to it rather than backgrounding.
+          await handleInboundEmail(shim as never, env);
+          return json({ ok: true });
+        }
+        const cronMatch = path.match(/^\/internal\/cron\/(daily|10min|monthly)$/);
+        if (cronMatch && method === 'POST') {
+          const cronExpr = cronMatch[1] === 'daily' ? '0 6 * * *' : cronMatch[1] === '10min' ? '*/10 * * * *' : '0 7 1 * *';
+          const pending: Promise<unknown>[] = [];
+          const shimCtx = { waitUntil: (p: Promise<unknown>) => { pending.push(p); }, passThroughOnException: () => {} };
+          await worker.scheduled({ cron: cronExpr, scheduledTime: Date.now(), noRetry: () => {} } as unknown as ScheduledEvent, env, shimCtx as unknown as ExecutionContext);
+          await Promise.all(pending);
+          return json({ ok: true, cron: cronExpr });
+        }
+        return error('Not found', 404);
+      }
+
       // Public routes (rate limited)
       if (path === '/api/auth/register' && method === 'POST') {
         const limited = await checkRateLimit(request, env.DB, 5, 60_000);
@@ -276,7 +309,7 @@ export default {
       // Receipt image upload
       const uploadMatch = path.match(/^\/api\/books\/([^/]+)\/receipts\/upload$/);
       if (uploadMatch && method === 'POST') {
-        return paid(() => uploadReceiptImage(request, env, userId, uploadMatch[1]));
+        return paid(() => uploadReceiptImage(request, env, userId, uploadMatch[1], (p) => ctx.waitUntil(p)));
       }
 
       // Single receipt routes
@@ -291,7 +324,7 @@ export default {
       // Receipt retry
       const retryMatch = path.match(/^\/api\/books\/([^/]+)\/receipts\/([^/]+)\/retry$/);
       if (retryMatch && method === 'POST') {
-        return paid(() => retryReceipt(request, env, userId, retryMatch[1], retryMatch[2]));
+        return paid(() => retryReceipt(request, env, userId, retryMatch[1], retryMatch[2], (p) => ctx.waitUntil(p)));
       }
 
       // Receipt image
@@ -631,3 +664,5 @@ export default {
     })());
   },
 };
+
+export default worker;

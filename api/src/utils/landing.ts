@@ -2168,7 +2168,7 @@ async function loadSettings(){
     else{$('anthropicKeyStatus').textContent='Using platform default';$('clearAnthropicKey').style.display='none'}
     if(U.openai_api_key){$('openaiKeyStatus').textContent='Custom key is set';$('openaiKeyStatus').style.color='var(--green)';$('clearOpenaiKey').style.display=''}
     else{$('openaiKeyStatus').textContent='Using platform default';$('clearOpenaiKey').style.display='none'}
-    if(U.weavehub_ai_key){$('weavehubKeyStatus').textContent='Key is set';$('weavehubKeyStatus').style.color='var(--green)';$('clearWeavehubKey').style.display=''}
+    if(U.weavehub_ai_key){$('weavehubKeyStatus').textContent='Key active — stored securely on the server, never displayed';$('weavehubKeyStatus').style.color='var(--green)';$('clearWeavehubKey').style.display=''}
     else{$('weavehubKeyStatus').textContent='No key saved';$('clearWeavehubKey').style.display='none'}
     updateWeavehubPanel();
   }
@@ -2198,7 +2198,7 @@ async function updateWeavehubPanel(){
   }
   try{
     var u=await api('/api/ai/usage');
-    var parts=['Credits: '+u.credit_balance];
+    var parts=['Key active','Credits: '+u.credit_balance];
     if(u.monthly_quota_scans>0)parts.push('Monthly allowance: '+(u.effective_limit-u.scans_used)+' of '+u.effective_limit+' left');
     parts.push('Total remaining: '+u.remaining+' scan'+(u.remaining===1?'':'s'));
     $('weavehubUsageText').textContent=parts.join(' · ');
@@ -2210,7 +2210,9 @@ async function createWeavehubKey(){
   try{
     var d=await api('/api/ai/create-key',{method:'POST',body:{}});
     U.weavehub_ai_key=true;
-    $('weavehubKeyStatus').textContent='Key is set';$('weavehubKeyStatus').style.color='var(--green)';$('clearWeavehubKey').style.display='';
+    $('weavehubUsageText').textContent='Key active'+(d.trial_scans?' — '+d.trial_scans+' trial scans ready':'')+'. Loading usage…';
+    $('weavehubUsageText').style.color='var(--green)';
+    $('weavehubKeyStatus').textContent='Key active — stored securely on the server, never displayed';$('weavehubKeyStatus').style.color='var(--green)';$('clearWeavehubKey').style.display='';
     toast('Key created'+(d.trial_scans?' — '+d.trial_scans+' trial scans included':''));
     updateWeavehubPanel();
   }catch(e){toast(e.message,'error')}
@@ -2297,7 +2299,7 @@ $('clearOpenaiKey').addEventListener('click',async function(){
 });
 $('saveWeavehubKey').addEventListener('click',async function(){
   var key=$('settWeavehubKey').value.trim();if(!key){toast('Enter your wh_ai_ key','error');return}
-  try{await api('/api/auth/preferences',{method:'PUT',body:{weavehub_ai_key:key}});$('settWeavehubKey').value='';U.weavehub_ai_key=true;$('weavehubKeyStatus').textContent='Key is set';$('weavehubKeyStatus').style.color='var(--green)';$('clearWeavehubKey').style.display='';toast('WeaveHub AI key saved');updateWeavehubPanel()}catch(e){toast(e.message,'error')}
+  try{await api('/api/auth/preferences',{method:'PUT',body:{weavehub_ai_key:key}});$('settWeavehubKey').value='';U.weavehub_ai_key=true;$('weavehubKeyStatus').textContent='Key active — stored securely on the server, never displayed';$('weavehubKeyStatus').style.color='var(--green)';$('clearWeavehubKey').style.display='';toast('WeaveHub AI key saved');updateWeavehubPanel()}catch(e){toast(e.message,'error')}
 });
 $('clearWeavehubKey').addEventListener('click',async function(){
   if(!confirm('Remove your WeaveHub AI key?'))return;

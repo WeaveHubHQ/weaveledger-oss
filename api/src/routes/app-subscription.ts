@@ -130,6 +130,11 @@ export async function verifyAppSubscription(request: Request, env: Env, userId: 
 
 // GET /api/app-subscription/status
 export async function getAppSubscriptionStatus(request: Request, env: Env, userId: string): Promise<Response> {
+  // Hosted-platform tenants: the plan includes the iOS app (Apple 3.1.3
+  // multiplatform entitlement — purchased via Stripe, honored in-app).
+  if (env.HOSTED_PLATFORM === '1') {
+    return success({ subscription_tier: 'pro', expires_at: null, source: 'hosted_plan' });
+  }
   const sub = await env.DB.prepare(`
     SELECT product_id, status, expires_at, auto_renew_enabled
     FROM app_subscriptions

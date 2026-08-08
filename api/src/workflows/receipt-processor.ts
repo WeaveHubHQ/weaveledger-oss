@@ -70,14 +70,22 @@ function htmlToText(html: string): string {
   return body.slice(0, 10000);
 }
 
-export class ReceiptProcessorWorkflow extends WorkflowEntrypoint<Env, ReceiptWorkflowParams> {
-  async run(event: WorkflowEvent<ReceiptWorkflowParams>, step: WorkflowStep) {
-    const { receiptId, bookId, userId, imageKey, emailBody, emailSubject, emailFrom } = event.payload;
+/** The full processing pipeline. With `step` it runs under Workflow
+    durability; without it (platform mode — dispatch-namespace workers have no
+    Workflow bindings) the same code runs inline. */
+export async function runReceiptPipeline(env: Env, payload: ReceiptWorkflowParams, step?: WorkflowStep) {
+  /* eslint-disable @typescript-eslint/no-explicit-any */
+  const doStep = (name: string, a: unknown, b?: unknown): Promise<any> =>
+    step
+      ? (b === undefined ? (step as any).do(name, a) : (step as any).do(name, a, b))
+      : Promise.resolve().then(() => (b === undefined ? (a as any)() : (b as any)()));
+  {
+    const { receiptId, bookId, userId, imageKey, emailBody, emailSubject, emailFrom } = payload;
 
     // Step 1: Mark as processing. Intentionally does NOT return the API keys —
     // step.do return values are persisted in workflow state and would expose secrets.
-    await step.do('mark-processing', async () => {
-      await this.env.DB.prepare(
+    await doStep('mark-processing', async () => {
+      await env.DB.prepare(
         "UPDATE receipts SET status = 'processing', updated_at = datetime('now') WHERE id = ?"
       ).bind(receiptId).run();
     });
@@ -94,11 +102,11 @@ export class ReceiptProcessorWorkflow extends WorkflowEntrypoint<Env, ReceiptWor
     let providerUsed: AiProvider = 'anthropic';
     let fallbackReason: string | null = null;
     try {
-      const result = await step.do(
+      const result = await doStep(
         'analyze-receipt',
         { retries: { limit: 1, delay: '2 seconds', backoff: 'constant' }, timeout: '90 seconds' },
         async () => {
-          const user = await this.env.DB.prepare(
+          const user = await env.DB.prepare(
             'SELECT ai_provider, weavehub_ai_enabled, anthropic_api_key, openai_api_key, weavehub_ai_key FROM users WHERE id = ?'
           ).bind(userId).first<{ ai_provider: AiProvider; weavehub_ai_enabled: number; anthropic_api_key: string | null; openai_api_key: string | null; weavehub_ai_key: string | null }>();
 
@@ -106,8 +114,8 @@ export class ReceiptProcessorWorkflow extends WorkflowEntrypoint<Env, ReceiptWor
           // Fallback pairing: weavehub falls back to a BYO anthropic key if
           // one exists; the BYO providers fall back to each other as before.
           const secondary: AiProvider = primary === 'anthropic' ? 'openai' : 'anthropic';
-          const primaryKey = await resolveKey(primary, userId, user, this.env);
-          const secondaryKey = await resolveKey(secondary, userId, user, this.env);
+          const primaryKey = await resolveKey(primary, userId, user, env);
+          const secondaryKey = await resolveKey(secondary, userId, user, env);
 
           if (!primaryKey) {
             throw new Error(`No API key configured for ${primary}`);
@@ -128,7 +136,7 @@ export class ReceiptProcessorWorkflow extends WorkflowEntrypoint<Env, ReceiptWor
 
           let input: Input;
           if (imageKey) {
-            const object = await this.env.RECEIPTS_BUCKET.get(imageKey);
+            const object = await env.RECEIPTS_BUCKET.get(imageKey);
             if (!object) throw new Error('Image not found in R2');
             const contentType = object.httpMetadata?.contentType || 'image/jpeg';
             const isHtml = /\.html?$/i.test(imageKey) || /^text\/html/i.test(contentType);
@@ -149,7 +157,7 @@ export class ReceiptProcessorWorkflow extends WorkflowEntrypoint<Env, ReceiptWor
             throw new Error('No image or email body provided');
           }
 
-          setAnthropicBaseUrl(this.env.ANTHROPIC_BASE_URL);
+          setAnthropicBaseUrl(env.ANTHROPIC_BASE_URL);
           const runOnce = async (prov: AiProvider, key: string) => {
             if (input.kind === 'pdf') return analyzeReceiptPdf(input.data, key, prov);
             if (input.kind === 'image') return analyzeReceiptImage(input.data, input.contentType, key, prov);
@@ -188,14 +196,14 @@ export class ReceiptProcessorWorkflow extends WorkflowEntrypoint<Env, ReceiptWor
       // need workflow durability — and the cleanupStuckReceipts cron is the safety
       // net if the worker dies before this returns.
       const message = err instanceof Error ? err.message : 'Unknown error';
-      await this.env.DB.prepare(
+      await env.DB.prepare(
         "UPDATE receipts SET status = 'failed', notes = ?, updated_at = datetime('now') WHERE id = ?"
       ).bind(`Analysis failed: ${message.slice(0, 500)}`, receiptId).run();
       return { receiptId, status: 'failed' };
     }
 
     // Step 3: Check for duplicates by receipt/invoice number
-    const duplicate = await step.do('check-duplicates', async () => {
+    const duplicate = await doStep('check-duplicates', async () => {
       if (!analysis.receipt_number && !analysis.invoice_number) return null;
 
       const conditions: string[] = [];
@@ -210,7 +218,7 @@ export class ReceiptProcessorWorkflow extends WorkflowEntrypoint<Env, ReceiptWor
         params.push(analysis.invoice_number);
       }
 
-      const existing = await this.env.DB.prepare(
+      const existing = await env.DB.prepare(
         `SELECT id, merchant, receipt_number, invoice_number FROM receipts
          WHERE book_id = ? AND id != ? AND (${conditions.join(' OR ')})`
       ).bind(...params).first<{ id: string; merchant: string; receipt_number: string; invoice_number: string }>();
@@ -219,7 +227,7 @@ export class ReceiptProcessorWorkflow extends WorkflowEntrypoint<Env, ReceiptWor
     });
 
     // Step 4: Save analysis results
-    await step.do('save-results', async () => {
+    await doStep('save-results', async () => {
       const duplicateNote = duplicate
         ? `Possible duplicate of receipt ${duplicate.id} (${duplicate.merchant || 'unknown merchant'})`
         : null;
@@ -229,7 +237,7 @@ export class ReceiptProcessorWorkflow extends WorkflowEntrypoint<Env, ReceiptWor
       const combinedNote = [duplicateNote, fallbackNote].filter(Boolean).join('\n') || null;
 
       const statements = [
-        this.env.DB.prepare(
+        env.DB.prepare(
           `UPDATE receipts SET
             merchant = ?, amount = ?, currency = ?, date = ?, category = ?,
             subcategory = ?, description = ?, payment_method = ?,
@@ -253,14 +261,14 @@ export class ReceiptProcessorWorkflow extends WorkflowEntrypoint<Env, ReceiptWor
         for (const item of analysis.line_items) {
           const itemId = generateId('li');
           statements.push(
-            this.env.DB.prepare(
+            env.DB.prepare(
               'INSERT INTO line_items (id, receipt_id, description, quantity, unit_price, total) VALUES (?, ?, ?, ?, ?, ?)'
             ).bind(itemId, receiptId, item.description, item.quantity, item.unit_price, item.total)
           );
         }
       }
 
-      await this.env.DB.batch(statements);
+      await env.DB.batch(statements);
     });
 
     return {
@@ -272,4 +280,34 @@ export class ReceiptProcessorWorkflow extends WorkflowEntrypoint<Env, ReceiptWor
       duplicate: duplicate ? { id: duplicate.id, merchant: duplicate.merchant } : null,
     };
   }
+}
+
+export class ReceiptProcessorWorkflow extends WorkflowEntrypoint<Env, ReceiptWorkflowParams> {
+  async run(event: WorkflowEvent<ReceiptWorkflowParams>, step: WorkflowStep) {
+    return runReceiptPipeline(this.env, event.payload, step);
+  }
+}
+
+/** Start receipt processing on whichever engine this deployment has: the
+    durable Workflow when bound, otherwise inline in the background. The
+    caller's existing catch/fallback semantics are preserved: a thrown error
+    here means "could not start". */
+export async function startReceiptProcessing(
+  env: Env,
+  workflowId: string,
+  params: ReceiptWorkflowParams,
+  waitUntil?: (p: Promise<unknown>) => void,
+): Promise<void> {
+  if (env.RECEIPT_WORKFLOW) {
+    await env.RECEIPT_WORKFLOW.create({ id: workflowId, params });
+    return;
+  }
+  const run = runReceiptPipeline(env, params).catch(async () => {
+    // Terminal writes happen inside the pipeline; this catch only guards
+    // against failures thrown before those writes. Best-effort mark.
+    await env.DB.prepare(
+      "UPDATE receipts SET status = 'failed', notes = 'Processing crashed before completion', updated_at = datetime('now') WHERE id = ? AND status IN ('pending','processing')"
+    ).bind(params.receiptId).run().catch(() => {});
+  });
+  if (waitUntil) waitUntil(run); else await run;
 }

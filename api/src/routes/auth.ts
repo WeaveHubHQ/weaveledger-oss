@@ -318,6 +318,7 @@ async function sendVerificationEmail(env: Env, linkedAddress: string, token: str
   const magicLink = `${VERIFY_BASE_URL}?t=${encodeURIComponent(token)}`;
   const { html, text } = buildVerificationEmail(linkedAddress, magicLink);
 
+  if (!env.SEND_EMAIL) throw new Error('Email sending is not available on this deployment');
   await env.SEND_EMAIL.send({
     to: linkedAddress,
     from: `${VERIFY_SENDER_NAME} <${VERIFY_SENDER}>`,
@@ -690,6 +691,7 @@ export async function forgotPassword(request: Request, env: Env): Promise<Respon
   const resetUrl = `https://ledger.weavehub.app/?reset_token=${resetToken}&email=${encodeURIComponent(user.email)}`;
 
   try {
+    if (!env.SEND_EMAIL) return error('Email sending is not available on this deployment', 501);
     await env.SEND_EMAIL.send({
       from: 'WeaveLedger <noreply@business.weavehub.app>',
       to: user.email,
