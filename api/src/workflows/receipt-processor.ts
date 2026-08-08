@@ -33,16 +33,22 @@ function isBillingOrAuthError(message: string): boolean {
 async function resolveKey(
   prov: AiProvider,
   userId: string,
-  user: { anthropic_api_key: string | null; openai_api_key: string | null } | null,
+  user: { anthropic_api_key: string | null; openai_api_key: string | null; weavehub_ai_key: string | null } | null,
   env: Env,
 ): Promise<string | null> {
-  const encrypted = prov === 'anthropic' ? user?.anthropic_api_key : user?.openai_api_key;
+  const encrypted = prov === 'anthropic' ? user?.anthropic_api_key
+    : prov === 'weavehub' ? user?.weavehub_ai_key
+    : user?.openai_api_key;
   if (encrypted) {
     try {
       return await decryptValue(encrypted, env.JWT_SECRET, userId);
     } catch {
       // Fall through to worker-level secret if user's stored key cannot be decrypted.
     }
+  }
+  if (prov === 'weavehub') {
+    // Worker-level fallback: an instance-wide wh_ai_ key stored in CLAUDE_API_KEY.
+    return env.CLAUDE_API_KEY?.startsWith('wh_ai_') ? env.CLAUDE_API_KEY : null;
   }
   const envKey = prov === 'anthropic' ? env.CLAUDE_API_KEY : env.OPENAI_API_KEY;
   return envKey && envKey.length > 0 ? envKey : null;
@@ -93,10 +99,12 @@ export class ReceiptProcessorWorkflow extends WorkflowEntrypoint<Env, ReceiptWor
         { retries: { limit: 1, delay: '2 seconds', backoff: 'constant' }, timeout: '90 seconds' },
         async () => {
           const user = await this.env.DB.prepare(
-            'SELECT ai_provider, anthropic_api_key, openai_api_key FROM users WHERE id = ?'
-          ).bind(userId).first<{ ai_provider: AiProvider; anthropic_api_key: string | null; openai_api_key: string | null }>();
+            'SELECT ai_provider, weavehub_ai_enabled, anthropic_api_key, openai_api_key, weavehub_ai_key FROM users WHERE id = ?'
+          ).bind(userId).first<{ ai_provider: AiProvider; weavehub_ai_enabled: number; anthropic_api_key: string | null; openai_api_key: string | null; weavehub_ai_key: string | null }>();
 
-          const primary = (user?.ai_provider || 'anthropic') as AiProvider;
+          const primary: AiProvider = user?.weavehub_ai_enabled ? 'weavehub' : ((user?.ai_provider || 'anthropic') as AiProvider);
+          // Fallback pairing: weavehub falls back to a BYO anthropic key if
+          // one exists; the BYO providers fall back to each other as before.
           const secondary: AiProvider = primary === 'anthropic' ? 'openai' : 'anthropic';
           const primaryKey = await resolveKey(primary, userId, user, this.env);
           const secondaryKey = await resolveKey(secondary, userId, user, this.env);

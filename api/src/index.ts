@@ -2,6 +2,7 @@ import { Env } from './types';
 import { authenticate, authenticateDownload, checkRateLimit, canAccessBook, requireSubscription } from './middleware/auth';
 import { deriveDownloadKey } from './utils/crypto';
 import { register, login, changePassword, getProfile, updatePreferences, getUserApiKey, mfaSetup, mfaEnable, mfaDisable, addLinkedEmail, removeLinkedEmail, listLinkedEmails, resendLinkedEmailVerification, verifyLinkedEmailLink, forgotPassword, resetPassword, refreshAuth } from './routes/auth';
+import { getAiUsage, createAiCheckout } from './routes/ai';
 import { listBooks, createBook, getBook, updateBook, deleteBook, shareBook, revokeShare, listInvitations, revokeInvitation } from './routes/books';
 import { listReceipts, createReceipt, getReceipt, updateReceipt, deleteReceipt, uploadReceiptImage, getReceiptImage, getReceiptAttachment, retryReceipt, getBookSummary, cleanupStuckReceipts } from './routes/receipts';
 import { exportBook } from './services/export';
@@ -156,6 +157,12 @@ export default {
       }
       if (path === '/api/auth/profile' && method === 'GET') {
         return addCors(await getProfile(request, env, userId));
+      }
+      if (path === '/api/ai/usage' && method === 'GET') {
+        return addCors(await getAiUsage(request, env, userId));
+      }
+      if (path === '/api/ai/checkout' && method === 'POST') {
+        return addCors(await createAiCheckout(request, env, userId));
       }
       if (path === '/api/auth/preferences' && method === 'PUT') {
         return addCors(await updatePreferences(request, env, userId));

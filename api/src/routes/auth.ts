@@ -209,7 +209,7 @@ export async function changePassword(request: Request, env: Env, userId: string)
 
 export async function getProfile(request: Request, env: Env, userId: string): Promise<Response> {
   const user = await env.DB.prepare(
-    'SELECT id, email, name, role, mfa_enabled, ai_provider, anthropic_api_key, openai_api_key, subscription_tier, subscription_expires_at, created_at FROM users WHERE id = ?'
+    'SELECT id, email, name, role, mfa_enabled, ai_provider, weavehub_ai_enabled, anthropic_api_key, openai_api_key, weavehub_ai_key, subscription_tier, subscription_expires_at, created_at FROM users WHERE id = ?'
   ).bind(userId).first<Record<string, unknown>>();
 
   if (!user) return error('User not found', 404);
@@ -220,8 +220,12 @@ export async function getProfile(request: Request, env: Env, userId: string): Pr
 
   return success({
     ...user,
+    // Present the effective provider; the flag is an internal storage detail.
+    ai_provider: user.weavehub_ai_enabled ? 'weavehub' : user.ai_provider,
+    weavehub_ai_enabled: undefined,
     anthropic_api_key: user.anthropic_api_key ? true : false,
     openai_api_key: user.openai_api_key ? true : false,
+    weavehub_ai_key: user.weavehub_ai_key ? true : false,
     linked_emails: linkedEmails.results,
   });
 }
@@ -499,16 +503,24 @@ export async function listLinkedEmails(request: Request, env: Env, userId: strin
 }
 
 export async function updatePreferences(request: Request, env: Env, userId: string): Promise<Response> {
-  const body = await request.json<{ ai_provider?: string; anthropic_api_key?: string | null; openai_api_key?: string | null }>();
+  const body = await request.json<{ ai_provider?: string; anthropic_api_key?: string | null; openai_api_key?: string | null; weavehub_ai_key?: string | null }>();
 
   if (body.ai_provider !== undefined) {
-    const valid = ['anthropic', 'openai'];
+    const valid = ['anthropic', 'openai', 'weavehub'];
     if (!valid.includes(body.ai_provider)) {
-      return error('Invalid AI provider. Must be: anthropic or openai.');
+      return error('Invalid AI provider. Must be: anthropic, openai, or weavehub.');
     }
-    await env.DB.prepare(
-      "UPDATE users SET ai_provider = ?, updated_at = datetime('now') WHERE id = ?"
-    ).bind(body.ai_provider, userId).run();
+    // 'weavehub' is stored as a flag (users.ai_provider has a CHECK limited to
+    // the BYO providers); ai_provider keeps the BYO fallback preference.
+    if (body.ai_provider === 'weavehub') {
+      await env.DB.prepare(
+        "UPDATE users SET weavehub_ai_enabled = 1, updated_at = datetime('now') WHERE id = ?"
+      ).bind(userId).run();
+    } else {
+      await env.DB.prepare(
+        "UPDATE users SET ai_provider = ?, weavehub_ai_enabled = 0, updated_at = datetime('now') WHERE id = ?"
+      ).bind(body.ai_provider, userId).run();
+    }
   }
 
   // Store API keys encrypted (per-user salt)
@@ -527,6 +539,18 @@ export async function updatePreferences(request: Request, env: Env, userId: stri
       : null;
     await env.DB.prepare(
       "UPDATE users SET openai_api_key = ?, updated_at = datetime('now') WHERE id = ?"
+    ).bind(encrypted, userId).run();
+  }
+
+  if (body.weavehub_ai_key !== undefined) {
+    if (body.weavehub_ai_key && !body.weavehub_ai_key.startsWith('wh_ai_')) {
+      return error('WeaveHub AI keys start with wh_ai_');
+    }
+    const encrypted = body.weavehub_ai_key
+      ? await encryptValue(body.weavehub_ai_key, env.JWT_SECRET, userId)
+      : null;
+    await env.DB.prepare(
+      "UPDATE users SET weavehub_ai_key = ?, updated_at = datetime('now') WHERE id = ?"
     ).bind(encrypted, userId).run();
   }
 

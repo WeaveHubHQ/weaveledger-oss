@@ -28,7 +28,7 @@ export interface OutboundEmail {
   reply_to?: string;
 }
 
-export type AiProvider = 'anthropic' | 'openai';
+export type AiProvider = 'anthropic' | 'openai' | 'weavehub';
 
 export interface User {
   id: string;
