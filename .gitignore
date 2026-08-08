@@ -8,3 +8,4 @@ dist/
 .DS_Store
 *.log
 api/package-lock.json
+!api/scripts/baseline-migrations.sql
