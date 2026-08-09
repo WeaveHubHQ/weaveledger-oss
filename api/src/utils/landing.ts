@@ -253,6 +253,10 @@ tr{cursor:pointer}
       </div>
       <button type="submit" class="btn btn-auth" id="loginBtn">Sign In</button>
     </form>
+    <div id="passkeyRow" style="display:none">
+      <div style="display:flex;align-items:center;gap:12px;margin:16px 0 12px"><div style="flex:1;height:1px;background:rgba(245,240,232,.12)"></div><span style="font-size:.72rem;color:rgba(245,240,232,.45);text-transform:uppercase;letter-spacing:.08em">or</span><div style="flex:1;height:1px;background:rgba(245,240,232,.12)"></div></div>
+      <button type="button" class="btn" id="passkeyLoginBtn" style="width:100%;justify-content:center;background:rgba(245,240,232,.06);color:var(--cream,#F5F0E8);border:1px solid rgba(245,240,232,.25);border-radius:12px;padding:13px;font-size:.95rem;font-weight:600">&#x1F511; Sign in with a passkey</button>
+    </div>
     <div class="auth-aux">
       <a href="#" id="forgotPassLink">Forgot password?</a>
     </div>
@@ -417,6 +421,12 @@ tr{cursor:pointer}
     <div class="card" id="mfaCard">
       <div class="card-header"><span class="card-title">Two-Factor Authentication</span></div>
       <div id="mfaContent"></div>
+    </div>
+    <div class="card" id="passkeysCard">
+      <div class="card-header"><span class="card-title">Passkeys</span></div>
+      <p style="font-size:.85rem;color:var(--text-light);padding:0 0 12px">Sign in with Face ID, Touch ID, or your device PIN — no password or authenticator code needed. Passkeys are phishing-resistant and count as two-factor on their own.</p>
+      <div id="passkeysList"></div>
+      <button class="btn btn-gold" id="addPasskeyBtn" style="margin-top:12px">+ Add a Passkey</button>
     </div>
     <div class="card" id="linkedEmailsCard">
       <div class="card-header"><span class="card-title">Linked Email Addresses</span></div>
@@ -962,6 +972,88 @@ function showMfaPrompt(){
   $('loginBtn').textContent='Verify & Sign In';
   document.getElementById('mfaCode').focus();
 }
+// PASSKEYS (WebAuthn)
+function bufToB64url(buf){var bytes=new Uint8Array(buf),bin='';for(var i=0;i<bytes.length;i++)bin+=String.fromCharCode(bytes[i]);return btoa(bin).replace(/\\+/g,'-').replace(/\\//g,'_').replace(/=+$/,'')}
+function b64urlToBuf(s){var b=s.replace(/-/g,'+').replace(/_/g,'/');while(b.length%4)b+='=';var bin=atob(b),bytes=new Uint8Array(bin.length);for(var i=0;i<bin.length;i++)bytes[i]=bin.charCodeAt(i);return bytes.buffer}
+if(window.PublicKeyCredential)$('passkeyRow').style.display='';
+$('passkeyLoginBtn').addEventListener('click',async function(){
+  var btn=this,err=$('loginError');err.style.display='none';btn.disabled=true;btn.textContent='Waiting for your passkey...';
+  try{
+    var r=await fetch('/api/auth/passkeys/login/options',{method:'POST'});
+    var o=await r.json();if(!r.ok)throw new Error(o.error||'Failed to start passkey sign-in');
+    var opts=o.data.publicKey;
+    var cred=await navigator.credentials.get({publicKey:{
+      challenge:b64urlToBuf(opts.challenge),rpId:opts.rpId,timeout:opts.timeout,
+      userVerification:opts.userVerification,allowCredentials:[]
+    }});
+    var vr=await fetch('/api/auth/passkeys/login/verify',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({
+      challenge_id:o.data.challenge_id,
+      credential:{id:cred.id,response:{
+        clientDataJSON:bufToB64url(cred.response.clientDataJSON),
+        authenticatorData:bufToB64url(cred.response.authenticatorData),
+        signature:bufToB64url(cred.response.signature),
+        userHandle:cred.response.userHandle?bufToB64url(cred.response.userHandle):null
+      }}
+    })});
+    var v=await vr.json();if(!vr.ok)throw new Error(v.error||'Passkey sign-in failed');
+    T=v.token;E=v.user&&v.user.email||'';
+    localStorage.setItem('wl_token',T);localStorage.setItem('wl_email',E);
+    showApp();
+  }catch(e){
+    if(e.name!=='NotAllowedError'&&e.name!=='AbortError'){err.textContent=e.message;err.style.display='block'}
+  }finally{btn.disabled=false;btn.innerHTML='\\uD83D\\uDD11 Sign in with a passkey'}
+});
+async function loadPasskeys(){
+  var c=$('passkeysList');if(!c)return;
+  if(!window.PublicKeyCredential){c.replaceChildren(el('p',{style:{fontSize:'.85rem',color:'var(--text-light)',fontStyle:'italic'}},'This browser does not support passkeys.'));$('addPasskeyBtn').style.display='none';return}
+  try{
+    var list=await api('/api/auth/passkeys');
+    c.replaceChildren();
+    if(!list.length){c.appendChild(el('p',{style:{fontSize:'.85rem',color:'var(--text-light)',padding:'4px 0',fontStyle:'italic'}},'No passkeys yet.'));return}
+    list.forEach(function(pk){
+      c.appendChild(el('div',{className:'share-item'},[
+        el('div',{className:'share-info'},[
+          el('span',{className:'share-name'},pk.nickname||'Passkey'),
+          el('span',{className:'share-email'},'Added '+fmtDate(pk.created_at)+(pk.last_used_at?' \\u00b7 Last used '+fmtDate(pk.last_used_at):' \\u00b7 Never used'))
+        ]),
+        el('button',{className:'btn btn-sm btn-danger',style:{fontSize:'.7rem',padding:'2px 8px'},onclick:async function(){
+          if(!confirm('Remove this passkey? You will no longer be able to sign in with it.'))return;
+          try{await api('/api/auth/passkeys/'+pk.id,{method:'DELETE'});toast('Passkey removed');loadPasskeys()}catch(e){toast(e.message,'error')}
+        }},'Remove')
+      ]));
+    });
+  }catch(e){c.replaceChildren(el('p',{style:{fontSize:'.85rem',color:'var(--red)'}},e.message))}
+}
+$('addPasskeyBtn').addEventListener('click',async function(){
+  var btn=this;btn.disabled=true;btn.textContent='Follow your browser prompts...';
+  try{
+    var o=await api('/api/auth/passkeys/register/options',{method:'POST',body:{}});
+    var opts=o.publicKey;
+    var cred=await navigator.credentials.create({publicKey:{
+      rp:opts.rp,
+      user:{id:b64urlToBuf(opts.user.id),name:opts.user.name,displayName:opts.user.displayName},
+      challenge:b64urlToBuf(opts.challenge),
+      pubKeyCredParams:opts.pubKeyCredParams,
+      timeout:opts.timeout,
+      excludeCredentials:(opts.excludeCredentials||[]).map(function(c){return{type:c.type,id:b64urlToBuf(c.id),transports:c.transports}}),
+      authenticatorSelection:opts.authenticatorSelection,
+      attestation:opts.attestation
+    }});
+    var nickname=prompt('Name this passkey (e.g. "MacBook Touch ID"):')||'';
+    await api('/api/auth/passkeys/register/verify',{method:'POST',body:{
+      challenge_id:o.challenge_id,
+      nickname:nickname,
+      credential:{id:cred.id,response:{
+        clientDataJSON:bufToB64url(cred.response.clientDataJSON),
+        attestationObject:bufToB64url(cred.response.attestationObject),
+        transports:cred.response.getTransports?cred.response.getTransports():[]
+      }}
+    }});
+    toast('Passkey added');loadPasskeys();
+  }catch(e){
+    if(e.name!=='NotAllowedError'&&e.name!=='AbortError')toast(e.message,'error');
+  }finally{btn.disabled=false;btn.textContent='+ Add a Passkey'}
+});
 $('logoutBtn').addEventListener('click',function(){T=null;E=null;U=null;localStorage.removeItem('wl_token');localStorage.removeItem('wl_email');
   $('landing').style.display='';$('app').style.display='none'});
 
@@ -2068,6 +2160,7 @@ async function loadSettings(){
   if(U){$('settEmail').textContent=U.email||'';$('settName').textContent=U.name||'';$('settRole').textContent=(U.role||'').charAt(0).toUpperCase()+(U.role||'').slice(1);$('settSince').textContent=U.created_at?fmtDate(U.created_at):'';
     $('settMfa').textContent=U.mfa_enabled?'Enabled':'Disabled';$('settMfa').style.color=U.mfa_enabled?'var(--green)':'var(--text-light)';
     renderMfaSettings(U.mfa_enabled);
+    loadPasskeys();
     renderLinkedEmails(U.linked_emails||[]);
     // AI Provider
     var prov=U.ai_provider||'anthropic';
