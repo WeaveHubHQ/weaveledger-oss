@@ -2776,10 +2776,10 @@ async function deleteReport(r){
 // the content still renders faithfully.
 function sanitizeEmailForPrint(html){
   var s=String(html||'');
-  s=s.replace(/<script[\s\S]*?<\/script>/gi,'');
-  s=s.replace(/<style[\s\S]*?<\/style>/gi,'');
+  s=s.replace(/<script[\\s\\S]*?<\\/script>/gi,'');
+  s=s.replace(/<style[\\s\\S]*?<\\/style>/gi,'');
   s=s.replace(/<link[^>]*>/gi,'');
-  s=s.replace(/<\/?(?:html|head|body)[^>]*>/gi,'');
+  s=s.replace(/<\\/?(?:html|head|body)[^>]*>/gi,'');
   return s;
 }
 async function openReportPrintView(r){
@@ -2796,7 +2796,7 @@ async function openReportPrintView(r){
     // email HTML) and PDF-primary receipts would otherwise render as a broken
     // <img>. We can't know the type without the response, so we fetch up to the
     // cap and keep only image/* responses.
-    var withImages=receipts.filter(function(rc){return rc.image_key&&!/_email\.html$/.test(rc.image_key)});
+    var withImages=receipts.filter(function(rc){return rc.image_key&&!/_email\\.html$/.test(rc.image_key)});
     var omitted=Math.max(0,withImages.length-maxImages);
     var imgs={};
     await Promise.all(withImages.slice(0,maxImages).map(async function(rc){
@@ -2808,7 +2808,7 @@ async function openReportPrintView(r){
     // Emailed receipts (no photo/PDF attached): embed the stored email HTML as
     // its own block in the appendix so a forwarded receipt becomes a real
     // document in the saved PDF, not just a table row.
-    var emailReceipts=receipts.filter(function(rc){return rc.image_key&&/_email\.html$/.test(rc.image_key)});
+    var emailReceipts=receipts.filter(function(rc){return rc.image_key&&/_email\\.html$/.test(rc.image_key)});
     var maxEmails=20;
     var emailOmitted=Math.max(0,emailReceipts.length-maxEmails);
     var emailDocs={};
