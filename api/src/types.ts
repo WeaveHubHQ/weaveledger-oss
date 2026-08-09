@@ -11,6 +11,8 @@ export interface Env {
   HOSTED_PLATFORM?: string;               // "1" on hosted tenants: iOS app entitlement is included in the plan
   GOOGLE_PLAY_WEBHOOK_SECRET: string;
   SEND_EMAIL?: { send: (message: OutboundEmail) => Promise<void> };  // absent on platform tenant workers
+  RESEND_API_KEY?: string;            // hosted-tenant outbound app email via Resend (preferred over SEND_EMAIL)
+  EMAIL_FROM?: string;                // sender address override, e.g. "noreply@weaveledger.app"
   SUBSCRIPTION_ENFORCEMENT?: string;  // "licensing" | "apple" | "none" (default: treat as "none")
   REGISTRATION?: string;              // "open" (default) | "first_user" | "invite" — who may create accounts
   APPLE_BUNDLE_ID?: string;           // "app.weavehub.WeaveLedger"

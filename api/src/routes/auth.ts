@@ -262,7 +262,6 @@ const PUBLIC_EMAIL_DOMAINS = new Set([
 const VERIFICATION_TTL_MS = 60 * 60 * 1000; // 1 hour
 const VERIFY_SENDER = 'noreply@business.weavehub.app';
 const VERIFY_SENDER_NAME = 'WeaveLedger';
-const VERIFY_BASE_URL = 'https://ledger.weavehub.app/api/verify-email';
 
 // 32 random bytes → 43-char URL-safe base64. ~256 bits of entropy — bearer
 // auth grade. Used as the token in the magic link.
@@ -328,18 +327,34 @@ function escapeHtml(s: string): string {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
 
-async function sendVerificationEmail(env: Env, linkedAddress: string, token: string): Promise<void> {
-  const magicLink = `${VERIFY_BASE_URL}?t=${encodeURIComponent(token)}`;
-  const { html, text } = buildVerificationEmail(linkedAddress, magicLink);
+// Outbound app email. Hosted tenants send via Resend (RESEND_API_KEY, from a
+// weaveledger.app sender); the main instance and self-hosters fall back to the
+// Cloudflare SEND_EMAIL binding. Sender address is overridable via EMAIL_FROM.
+async function sendAppEmail(env: Env, to: string, subject: string, html: string, text: string): Promise<void> {
+  const fromAddr = env.EMAIL_FROM || (env.RESEND_API_KEY ? 'noreply@weaveledger.app' : VERIFY_SENDER);
+  const from = `${VERIFY_SENDER_NAME} <${fromAddr}>`;
+  if (env.RESEND_API_KEY) {
+    const resp = await fetch('https://api.resend.com/emails', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${env.RESEND_API_KEY}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ from, to: [to], subject, html, text }),
+    });
+    if (!resp.ok) throw new Error(`Resend ${resp.status}: ${(await resp.text()).slice(0, 200)}`);
+    return;
+  }
+  if (env.SEND_EMAIL) {
+    await env.SEND_EMAIL.send({ to, from, subject, html, text });
+    return;
+  }
+  throw new Error('Email sending is not available on this deployment');
+}
 
-  if (!env.SEND_EMAIL) throw new Error('Email sending is not available on this deployment');
-  await env.SEND_EMAIL.send({
-    to: linkedAddress,
-    from: `${VERIFY_SENDER_NAME} <${VERIFY_SENDER}>`,
-    subject: 'Verify your WeaveLedger sender address',
-    html,
-    text,
-  });
+// baseUrl is the requesting host's origin so the magic link points at the
+// tenant the user is actually on (not the hardcoded main instance).
+async function sendVerificationEmail(env: Env, baseUrl: string, linkedAddress: string, token: string): Promise<void> {
+  const magicLink = `${baseUrl}/api/verify-email?t=${encodeURIComponent(token)}`;
+  const { html, text } = buildVerificationEmail(linkedAddress, magicLink);
+  await sendAppEmail(env, linkedAddress, 'Verify your WeaveLedger sender address', html, text);
 }
 
 export async function addLinkedEmail(request: Request, env: Env, userId: string): Promise<Response> {
@@ -389,7 +404,7 @@ export async function addLinkedEmail(request: Request, env: Env, userId: string)
   ).bind(id, userId, email, token, expires).run();
 
   try {
-    await sendVerificationEmail(env, email, token);
+    await sendVerificationEmail(env, new URL(request.url).origin, email, token);
   } catch (err) {
     // Roll back the pending row — leaving an unsent pending verification
     // would block the user from re-adding the same address.
@@ -423,7 +438,7 @@ export async function resendLinkedEmailVerification(
   ).bind(token, expires, emailId).run();
 
   try {
-    await sendVerificationEmail(env, row.email, token);
+    await sendVerificationEmail(env, new URL(request.url).origin, row.email, token);
   } catch (err) {
     console.error('[Auth] Failed to re-send verification email:', err);
     return error('Could not send verification email. Try again in a moment.', 502);
@@ -707,16 +722,13 @@ export async function forgotPassword(request: Request, env: Env): Promise<Respon
     'INSERT INTO password_reset_tokens (id, user_id, token_hash, expires_at) VALUES (?, ?, ?, ?)'
   ).bind(id, user.id, tokenHash, expiresAt).run();
 
-  // Send reset email
-  const resetUrl = `https://ledger.weavehub.app/?reset_token=${resetToken}&email=${encodeURIComponent(user.email)}`;
+  // Send reset email — link points at the requesting host so it works on any
+  // tenant, not just the main instance.
+  const resetUrl = `${new URL(request.url).origin}/?reset_token=${resetToken}&email=${encodeURIComponent(user.email)}`;
 
   try {
-    if (!env.SEND_EMAIL) return error('Email sending is not available on this deployment', 501);
-    await env.SEND_EMAIL.send({
-      from: 'WeaveLedger <noreply@business.weavehub.app>',
-      to: user.email,
-      subject: 'Reset your WeaveLedger password',
-      html: `
+    await sendAppEmail(env, user.email, 'Reset your WeaveLedger password',
+      `
         <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 480px; margin: 0 auto; padding: 32px;">
           <h2 style="color: #1a2744; margin-bottom: 16px;">Password Reset</h2>
           <p style="color: #4a5568; line-height: 1.6;">Hi ${user.name},</p>
@@ -727,8 +739,7 @@ export async function forgotPassword(request: Request, env: Env): Promise<Respon
           <p style="color: #a0aec0; font-size: 12px;">WeaveLedger &mdash; Weave your finances together</p>
         </div>
       `,
-      text: `Hi ${user.name},\n\nWe received a request to reset your WeaveLedger password. Open this link within 15 minutes:\n\n${resetUrl}\n\nIf you didn't request this, ignore this email.`,
-    });
+      `Hi ${user.name},\n\nWe received a request to reset your WeaveLedger password. Open this link within 15 minutes:\n\n${resetUrl}\n\nIf you didn't request this, ignore this email.`);
   } catch (e) {
     console.error('Failed to send reset email:', e);
     // Don't reveal email sending failures to prevent enumeration
