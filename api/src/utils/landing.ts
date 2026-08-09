@@ -26,28 +26,6 @@ body{font-family:var(--font-body);color:var(--text);background:var(--cream);line
 ::-webkit-scrollbar-track{background:transparent}
 ::-webkit-scrollbar-thumb{background:var(--cream-dark);border-radius:3px}
 
-/* LANDING NAV */
-.l-nav{position:fixed;top:0;left:0;right:0;z-index:100;background:rgba(10,22,40,.97);backdrop-filter:blur(12px);border-bottom:1px solid rgba(201,168,76,.15)}
-.l-nav-inner{max-width:1120px;margin:0 auto;display:flex;align-items:center;justify-content:space-between;padding:0 32px;height:64px}
-.logo{font-family:var(--font-display);font-size:1.35rem;color:var(--cream);letter-spacing:-.02em;text-decoration:none}
-.logo span{color:var(--gold)}
-.l-links{display:flex;gap:28px;align-items:center}
-.l-links a{color:rgba(245,240,232,.65);text-decoration:none;font-size:.88rem;font-weight:500;letter-spacing:.02em;text-transform:uppercase;transition:color .2s}
-.l-links a:hover{color:var(--gold-light)}
-.l-cta{background:var(--gold)!important;color:var(--navy)!important;padding:8px 20px;border-radius:var(--radius);font-weight:600!important;text-transform:none!important;letter-spacing:0!important}
-.l-cta:hover{background:var(--gold-light)!important}
-
-/* HERO */
-.hero{position:relative;min-height:100vh;background:var(--navy);display:flex;align-items:center;overflow:hidden}
-.hero::before{content:'';position:absolute;inset:0;background:repeating-linear-gradient(0deg,transparent,transparent 39px,rgba(201,168,76,.04) 39px,rgba(201,168,76,.04) 40px),repeating-linear-gradient(90deg,transparent,transparent 79px,rgba(201,168,76,.03) 79px,rgba(201,168,76,.03) 80px);pointer-events:none}
-.hero::after{content:'';position:absolute;top:-40%;right:-20%;width:800px;height:800px;background:radial-gradient(circle,rgba(201,168,76,.08) 0%,transparent 70%);pointer-events:none}
-.hero-inner{position:relative;z-index:2;max-width:1120px;margin:0 auto;padding:120px 32px 80px;display:grid;grid-template-columns:1fr 1fr;gap:80px;align-items:center}
-.hero-tag{display:inline-flex;align-items:center;gap:8px;font-size:.78rem;font-weight:600;text-transform:uppercase;letter-spacing:.12em;color:var(--gold);margin-bottom:24px}
-.hero-tag::before{content:'';width:32px;height:1px;background:var(--gold)}
-.hero h1{font-family:var(--font-display);font-size:clamp(2.4rem,5vw,3.6rem);color:var(--cream);line-height:1.12;margin-bottom:24px;letter-spacing:-.02em}
-.hero h1 em{font-style:italic;color:var(--gold)}
-.hero-sub{font-size:1.1rem;color:rgba(245,240,232,.55);line-height:1.7;max-width:480px;margin-bottom:40px}
-.hero-actions{display:flex;gap:16px;flex-wrap:wrap}
 .btn{display:inline-flex;align-items:center;gap:8px;padding:12px 24px;border-radius:var(--radius);font-family:var(--font-body);font-size:.9rem;font-weight:600;text-decoration:none;border:none;cursor:pointer;transition:all .2s}
 .btn-gold{background:var(--gold);color:var(--navy)}.btn-gold:hover{background:var(--gold-light);transform:translateY(-1px)}
 .btn-navy{background:var(--navy);color:var(--cream)}.btn-navy:hover{background:var(--navy-mid)}
@@ -56,43 +34,35 @@ body{font-family:var(--font-body);color:var(--text);background:var(--cream);line
 .btn-refresh{background:none;border:1px solid var(--cream-dark,#e0d9cf);border-radius:8px;width:34px;height:34px;font-size:1.1rem;cursor:pointer;color:var(--text-light);display:flex;align-items:center;justify-content:center;transition:all .2s}.btn-refresh:hover{border-color:var(--gold);color:var(--gold);background:rgba(191,155,48,.06)}.btn-refresh.spinning{animation:spin .6s linear}@keyframes spin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}
 .btn-danger{background:#fef2f2;color:var(--red);border:1px solid rgba(204,68,68,.15)}.btn-danger:hover{background:#fee2e2}
 .btn:disabled{opacity:.5;cursor:not-allowed;transform:none!important}
-.hero-visual{position:relative}
-.receipt-card{background:var(--white);border-radius:12px;padding:36px 32px;max-width:360px;margin:0 auto;box-shadow:0 40px 80px rgba(0,0,0,.4),0 0 0 1px rgba(201,168,76,.1);transform:rotate(1.5deg)}
-.receipt-header{text-align:center;padding-bottom:20px;border-bottom:2px dashed var(--cream-dark);margin-bottom:20px}
-.receipt-header h3{font-family:var(--font-display);font-size:1.15rem;color:var(--navy)}
-.receipt-header small{color:var(--text-light);font-size:.82rem}
-.receipt-line{display:flex;justify-content:space-between;padding:8px 0;font-size:.9rem}
-.receipt-line span:last-child{font-weight:600;font-variant-numeric:tabular-nums}
-.receipt-total{display:flex;justify-content:space-between;padding:14px 0 0;margin-top:12px;border-top:2px solid var(--navy);font-weight:700;font-size:1.05rem}
-.receipt-badge{display:inline-block;margin-top:16px;background:#e8f5ee;color:var(--green);padding:4px 12px;border-radius:20px;font-size:.78rem;font-weight:600}
-.receipt-float{position:absolute;top:-20px;right:-20px;background:var(--navy-mid);color:var(--gold);padding:10px 16px;border-radius:8px;font-size:.78rem;font-weight:600;box-shadow:0 8px 24px rgba(0,0,0,.3);transform:rotate(3deg)}
-
-/* FEATURES */
-.features{padding:120px 32px;background:var(--white);position:relative}
-.features::before{content:'';position:absolute;top:0;left:50%;transform:translateX(-50%);width:1px;height:80px;background:linear-gradient(to bottom,var(--gold),transparent)}
-.section-inner{max-width:1120px;margin:0 auto}
-.section-tag{display:flex;align-items:center;gap:10px;font-size:.75rem;font-weight:600;text-transform:uppercase;letter-spacing:.14em;color:var(--gold-dim);margin-bottom:16px}
-.section-tag::before{content:'';width:24px;height:1px;background:var(--gold-dim)}
-.section-title{font-family:var(--font-display);font-size:clamp(1.8rem,3.5vw,2.6rem);color:var(--navy);line-height:1.2;margin-bottom:16px}
-.section-desc{color:var(--text-light);font-size:1.05rem;max-width:560px;margin-bottom:64px}
-.features-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:24px}
-.feature-card{background:var(--cream);border-radius:12px;padding:36px 28px;border:1px solid rgba(201,168,76,.12);transition:all .3s}
-.feature-card:hover{transform:translateY(-4px);box-shadow:0 16px 48px rgba(10,22,40,.08);border-color:rgba(201,168,76,.3)}
-.feature-icon{width:48px;height:48px;border-radius:10px;background:var(--navy);color:var(--gold);display:flex;align-items:center;justify-content:center;font-size:1.3rem;margin-bottom:20px}
-.feature-card h3{font-family:var(--font-display);font-size:1.15rem;color:var(--navy);margin-bottom:10px}
-.feature-card p{color:var(--text-light);font-size:.92rem;line-height:1.65}
-
-/* LOGIN */
-.login-section{padding:120px 32px;background:var(--cream);position:relative}
-.login-grid{max-width:1120px;margin:0 auto;display:grid;grid-template-columns:1fr 420px;gap:80px;align-items:center;position:relative;z-index:1}
-.login-form-wrap{background:var(--white);border-radius:12px;padding:40px 36px;box-shadow:0 20px 60px rgba(10,22,40,.08);border:1px solid rgba(10,22,40,.06)}
-.login-form-wrap h3{font-family:var(--font-display);font-size:1.5rem;color:var(--navy);margin-bottom:6px}
-.login-form-wrap>p{color:var(--text-light);font-size:.9rem;margin-bottom:28px}
-footer{background:var(--navy);padding:48px 32px;border-top:1px solid rgba(201,168,76,.1)}
-.footer-inner{max-width:1120px;margin:0 auto;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:16px}
-.footer-logo{font-family:var(--font-display);font-size:1.1rem;color:var(--cream)}
-.footer-logo span{color:var(--gold)}
-footer p{color:rgba(245,240,232,.35);font-size:.85rem}
+/* AUTH SCREEN (login-only landing) */
+#landing{min-height:100vh;background:var(--navy);display:flex;align-items:center;justify-content:center;padding:24px;position:relative;overflow:hidden}
+#landing::before{content:'';position:absolute;inset:0;background:repeating-linear-gradient(0deg,transparent 0 31px,rgba(245,240,232,.025) 31px 32px);pointer-events:none}
+#landing::after{content:'';position:absolute;top:-30%;left:50%;transform:translateX(-50%);width:720px;height:720px;border-radius:50%;background:radial-gradient(circle,rgba(201,168,76,.10),transparent 62%);pointer-events:none}
+.auth-wrap{position:relative;z-index:1;width:100%;max-width:400px;text-align:center;animation:fadeUp .5s ease both}
+.auth-logo{width:52px;height:52px;margin:0 auto 16px;display:block}
+.auth-brand{font-family:var(--font-display);font-size:2.3rem;letter-spacing:-.02em;line-height:1;margin-bottom:9px}
+.auth-brand .b-w{color:#fff}.auth-brand .b-l{color:var(--gold-light)}
+.auth-tag{font-size:.82rem;color:rgba(245,240,232,.5);letter-spacing:.14em;text-transform:uppercase;margin-bottom:34px}
+.auth-card{background:#132240;border:1px solid rgba(245,240,232,.08);border-radius:16px;padding:34px 30px;text-align:left;box-shadow:0 24px 64px rgba(0,0,0,.45)}
+.auth-rule{height:2px;width:44px;background:var(--gold);border-radius:1px;margin-bottom:20px}
+.auth-card h3{font-size:1.12rem;font-weight:600;color:var(--cream);margin-bottom:4px}
+.auth-card .auth-sub{font-size:.85rem;color:rgba(245,240,232,.5);margin-bottom:24px}
+#landing .form-group label{color:rgba(245,240,232,.55)}
+#landing .form-input{background:#1A3058;border:1px solid rgba(245,240,232,.12);color:var(--cream)}
+#landing .form-input::placeholder{color:rgba(245,240,232,.3)}
+#landing .form-input:focus{border-color:var(--gold);box-shadow:0 0 0 3px rgba(201,168,76,.15)}
+#landing .form-error{background:rgba(204,68,68,.12);border:1px solid rgba(204,68,68,.3);color:#f0a0a0}
+.btn-auth{width:100%;justify-content:center;background:var(--gold-light);color:var(--navy);border-radius:12px;padding:14px;font-size:1rem;font-weight:600}
+.btn-auth:hover{filter:brightness(1.05)}
+.auth-aux{text-align:center;margin-top:16px}
+.auth-aux a{font-size:.85rem;color:var(--gold-light);text-decoration:none}
+.auth-aux a:hover{text-decoration:underline}
+.auth-foot{margin-top:28px;font-size:.76rem;color:rgba(245,240,232,.35)}
+.auth-foot a{color:rgba(245,240,232,.45);text-decoration:none;margin:0 7px}
+.auth-foot a:hover{color:var(--gold-light)}
+.auth-h3{font-family:var(--font-display);font-size:1.25rem;color:var(--cream);margin-bottom:6px}
+.auth-p{color:rgba(245,240,232,.5);font-size:.85rem;margin-bottom:20px}
+#landing .form-success{color:#7fd7a8;background:rgba(56,161,105,.12);border:1px solid rgba(56,161,105,.3)}
 
 /* FORM ELEMENTS */
 .form-group{margin-bottom:18px}
@@ -240,21 +210,9 @@ tr{cursor:pointer}
 
 /* ANIMATIONS */
 @keyframes fadeUp{from{opacity:0;transform:translateY(24px)}to{opacity:1;transform:translateY(0)}}
-.hero-tag{animation:fadeUp .6s ease both}
-.hero h1{animation:fadeUp .6s .1s ease both}
-.hero-sub{animation:fadeUp .6s .2s ease both}
-.hero-actions{animation:fadeUp .6s .3s ease both}
-.receipt-card{animation:fadeUp .8s .4s ease both}
 
 /* RESPONSIVE */
 @media(max-width:860px){
-  .hero-inner{grid-template-columns:1fr;gap:48px;text-align:center}
-  .hero-sub{margin-left:auto;margin-right:auto}
-  .hero-actions{justify-content:center}
-  .hero-visual{order:-1}
-  .receipt-card{transform:rotate(0)}
-  .login-grid{grid-template-columns:1fr}
-  .l-links a:not(.l-cta){display:none}
   .chart-grid{grid-template-columns:1fr}
   .detail-panel{width:100%}
   .form-row{grid-template-columns:1fr}
@@ -267,55 +225,18 @@ tr{cursor:pointer}
 
 <!-- LANDING -->
 <div id="landing">
-<nav class="l-nav"><div class="l-nav-inner">
-  <a class="logo" href="#">Weave<span>Ledger</span></a>
-  <div class="l-links">
-    <a href="#login" class="l-cta">Sign In</a>
-  </div>
-</div></nav>
-<section class="hero"><div class="hero-inner">
-  <div>
-    <div class="hero-tag">Receipt Tracking Platform</div>
-    <h1>Weave your <em>finances</em> together</h1>
-    <p class="hero-sub">Capture receipts by camera, email, or manual entry. Categorize expenses, share books with your team, and export to any format your accountant needs.</p>
-    <div class="hero-actions">
-      <a href="#login" class="btn btn-gold">Get Started</a>
-    </div>
-  </div>
-  <div class="hero-visual">
-    <div class="receipt-card">
-      <div class="receipt-float">AI Scanned</div>
-      <div class="receipt-header"><h3>Corner Bakery</h3><small>Mar 6, 2026 &middot; 11:42 AM</small></div>
-      <div class="receipt-line"><span>Sourdough Loaf</span><span>$6.50</span></div>
-      <div class="receipt-line"><span>Oat Milk Latte</span><span>$5.25</span></div>
-      <div class="receipt-line"><span>Blueberry Muffin</span><span>$4.00</span></div>
-      <div class="receipt-total"><span>Total</span><span>$15.75</span></div>
-      <div class="receipt-badge">Categorized: Meals</div>
-    </div>
-  </div>
-</div></section>
-<section class="features"><div class="section-inner">
-  <div class="section-tag">Features</div>
-  <h2 class="section-title">Everything you need to manage your money</h2>
-  <p class="section-desc">From daily receipts to year-end taxes, WeaveLedger keeps your finances organized and actionable.</p>
-  <div class="features-grid">
-    <div class="feature-card"><div class="feature-icon">&#x1F4F8;</div><h3>Smart Receipt Scanning</h3><p>Snap a photo or forward an email — AI extracts vendor, amount, date, and category automatically.</p></div>
-    <div class="feature-card"><div class="feature-icon">&#x1F4CA;</div><h3>Financial Dashboard</h3><p>See revenue vs expenses at a glance with interactive charts and real-time category breakdowns.</p></div>
-    <div class="feature-card"><div class="feature-icon">&#x1F4B0;</div><h3>Budgets</h3><p>Set monthly, quarterly, or yearly spending limits by category and track your progress in real time.</p></div>
-    <div class="feature-card"><div class="feature-icon">&#x1F504;</div><h3>Recurring Bills</h3><p>Track subscriptions, rent, insurance, and other recurring expenses with due date alerts.</p></div>
-    <div class="feature-card"><div class="feature-icon">&#x1F3E6;</div><h3>Tax Center</h3><p>Tag deductible expenses with IRS Schedule C categories and estimate quarterly tax payments.</p></div>
-    <div class="feature-card"><div class="feature-icon">&#x1F4C8;</div><h3>Profit &amp; Loss</h3><p>See your complete financial picture with revenue vs expenses breakdown by month, quarter, or year.</p></div>
-  </div>
-</div></section>
-<section class="login-section" id="login"><div class="login-grid">
-  <div>
-    <div class="section-tag">Account Access</div>
-    <h2 class="section-title">Sign in to your ledger</h2>
-    <p class="section-desc">Access your books, review receipts, and manage your expenses from any browser.</p>
-  </div>
-  <div class="login-form-wrap">
+<main class="auth-wrap">
+  <svg class="auth-logo" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+    <path d="M5 3.5h11.5A2.5 2.5 0 0 1 19 6v12.5a2 2 0 0 1-2 2H7a2.5 2.5 0 0 1-2.5-2.5V6A2.5 2.5 0 0 1 5 3.5Z" stroke="#C9A84C" stroke-width="1.6"/>
+    <path d="M8.5 3.5v17" stroke="#C9A84C" stroke-width="1.6"/>
+    <path d="M12 8.5h4M12 12h4" stroke="#C9A84C" stroke-width="1.4" stroke-linecap="round"/>
+  </svg>
+  <div class="auth-brand" role="img" aria-label="WeaveLedger"><span class="b-w">Weave</span><span class="b-l">Ledger</span></div>
+  <div class="auth-tag">Smart expense tracking</div>
+  <section class="auth-card" id="login" aria-labelledby="authTitle">
+    <div class="auth-rule"></div>
     <h3 id="authTitle">Welcome back</h3>
-    <p id="authDesc">Enter your credentials to continue.</p>
+    <p class="auth-sub" id="authDesc">Sign in to your ledger.</p>
     <div id="loginError" class="form-error"></div>
     <form id="loginForm">
       <div id="nameGroup" class="form-group" style="display:none">
@@ -330,32 +251,32 @@ tr{cursor:pointer}
         <label for="loginPass">Password</label>
         <input class="form-input" type="password" id="loginPass" required autocomplete="current-password" placeholder="Enter your password">
       </div>
-      <button type="submit" class="btn btn-navy" style="width:100%" id="loginBtn">Sign In</button>
+      <button type="submit" class="btn btn-auth" id="loginBtn">Sign In</button>
     </form>
-    <div style="text-align:center;margin-top:12px">
-      <a href="#" id="forgotPassLink" style="font-size:.82rem;color:var(--text-light);text-decoration:none">Forgot password?</a>
+    <div class="auth-aux">
+      <a href="#" id="forgotPassLink">Forgot password?</a>
     </div>
     <div id="forgotPassForm" style="display:none">
-      <h3 style="font-family:var(--font-display);font-size:1.3rem;color:var(--navy);margin-bottom:6px">Reset Password</h3>
-      <p style="color:var(--text-light);font-size:.85rem;margin-bottom:20px">Enter your email to receive a reset link.</p>
+      <h3 class="auth-h3">Reset Password</h3>
+      <p class="auth-p">Enter your email to receive a reset link.</p>
       <div id="forgotError" class="form-error"></div>
-      <div id="forgotSuccess" class="form-error" style="color:var(--green);background:rgba(56,161,105,.08)"></div>
+      <div id="forgotSuccess" class="form-error form-success"></div>
       <div class="form-group"><label for="forgotEmail">Email Address</label><input class="form-input" type="email" id="forgotEmail" required placeholder="you@company.com"></div>
-      <button type="button" class="btn btn-navy" style="width:100%" id="forgotBtn">Send Reset Link</button>
-      <div style="text-align:center;margin-top:12px"><a href="#" id="backToLogin" style="font-size:.82rem;color:var(--gold);text-decoration:none">Back to Sign In</a></div>
+      <button type="button" class="btn btn-auth" id="forgotBtn">Send Reset Link</button>
+      <div class="auth-aux"><a href="#" id="backToLogin">Back to Sign In</a></div>
     </div>
     <div id="resetPassForm" style="display:none">
-      <h3 style="font-family:var(--font-display);font-size:1.3rem;color:var(--navy);margin-bottom:6px">Set New Password</h3>
-      <p style="color:var(--text-light);font-size:.85rem;margin-bottom:20px">Enter your new password below.</p>
+      <h3 class="auth-h3">Set New Password</h3>
+      <p class="auth-p">Enter your new password below.</p>
       <div id="resetError" class="form-error"></div>
-      <div id="resetSuccess" class="form-error" style="color:var(--green);background:rgba(56,161,105,.08)"></div>
+      <div id="resetSuccess" class="form-error form-success"></div>
       <div class="form-group"><label for="resetNewPass">New Password</label><input class="form-input" type="password" id="resetNewPass" required autocomplete="new-password" placeholder="Min. 8 characters" minlength="8"></div>
       <div class="form-group"><label for="resetConfirmPass">Confirm Password</label><input class="form-input" type="password" id="resetConfirmPass" required autocomplete="new-password" placeholder="Confirm new password"></div>
-      <button type="button" class="btn btn-navy" style="width:100%" id="resetBtn">Reset Password</button>
+      <button type="button" class="btn btn-auth" id="resetBtn">Reset Password</button>
     </div>
-  </div>
-</div></section>
-<footer><div class="footer-inner"><div class="footer-logo">Weave<span>Ledger</span></div><div style="display:flex;gap:20px"><a href="/terms" style="color:rgba(245,240,232,.45);text-decoration:none;font-size:.82rem">Terms</a><a href="/privacy" style="color:rgba(245,240,232,.45);text-decoration:none;font-size:.82rem">Privacy</a></div><p>Receipt tracking for small business</p></div></footer>
+  </section>
+  <div class="auth-foot"><a href="/terms">Terms</a>&middot;<a href="/privacy">Privacy</a></div>
+</main>
 </div>
 
 <!-- APP -->
