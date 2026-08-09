@@ -159,6 +159,24 @@ tr{cursor:pointer}
 .modal-body{padding:24px}
 .modal-footer{display:flex;justify-content:flex-end;gap:10px;padding:16px 24px;border-top:1px solid var(--cream-dark)}
 
+/* ONBOARDING WIZARD */
+.onb-card{position:relative;background:var(--navy-mid,#132240);color:var(--cream,#F5F0E8);border:1px solid rgba(245,240,232,.1);border-radius:16px;max-width:440px;width:100%;padding:28px;box-shadow:0 24px 64px rgba(0,0,0,.45)}
+.onb-x{position:absolute;top:14px;right:16px;background:none;border:none;color:rgba(245,240,232,.5);font-size:1.4rem;line-height:1;cursor:pointer;font-family:inherit}
+.onb-x:hover{color:var(--gold-light,#E4CC7A)}
+.onb-dots{display:flex;gap:6px;justify-content:center;margin-bottom:18px}
+.onb-dot{width:7px;height:7px;border-radius:50%;background:rgba(245,240,232,.25)}
+.onb-dot.on{background:var(--gold,#C9A84C)}
+.onb-card h2{font-size:1.25rem;margin-bottom:8px;color:var(--cream,#F5F0E8)}
+.onb-card p{color:rgba(245,240,232,.7);font-size:.92rem;line-height:1.6;margin-bottom:20px}
+.onb-actions{display:flex;gap:10px;align-items:center}
+.onb-actions .spacer{flex:1}
+.onb-skip{background:none;border:none;color:rgba(245,240,232,.5);font-size:.85rem;cursor:pointer;font-family:inherit}
+.onb-skip:hover{color:var(--gold-light,#E4CC7A)}
+#replayOnb{color:var(--gold-dim);text-decoration:underline}
+#replayOnb:hover{color:var(--gold-light,#E4CC7A)}
+.onb-btn{background:var(--gold-light,#E4CC7A);color:var(--navy,#0A1628);border:none;border-radius:10px;padding:10px 18px;font-weight:600;font-size:.92rem;cursor:pointer;font-family:inherit}
+.onb-btn.ghost{background:transparent;color:var(--cream,#F5F0E8);border:1px solid rgba(245,240,232,.25)}
+
 /* RECEIPT DETAIL PANEL */
 .detail-panel{display:none;position:fixed;top:56px;right:0;bottom:0;width:480px;background:var(--white);box-shadow:-8px 0 32px rgba(0,0,0,.1);z-index:40;overflow-y:auto;border-left:1px solid var(--cream-dark)}
 .detail-panel.open{display:block}
@@ -420,6 +438,7 @@ tr{cursor:pointer}
       <div class="detail-row"><span class="dl">Role</span><span class="dv" id="settRole"></span></div>
       <div class="detail-row"><span class="dl">Member Since</span><span class="dv" id="settSince"></span></div>
       <div class="detail-row"><span class="dl">Two-Factor Auth</span><span class="dv" id="settMfa"></span></div>
+      <div class="detail-row"><span class="dl">Getting started</span><span class="dv"><button class="onb-skip" id="replayOnb" type="button">Replay walkthrough</button></span></div>
     </div>
     <div class="card" id="mfaCard">
       <div class="card-header"><span class="card-title">Two-Factor Authentication</span></div>
@@ -612,6 +631,23 @@ tr{cursor:pointer}
     <div class="modal-header"><h2 id="modalTitle"></h2><button class="modal-close" id="modalClose">&times;</button></div>
     <div class="modal-body" id="modalBody"></div>
     <div class="modal-footer" id="modalFooter"></div>
+  </div>
+</div>
+
+<!-- ONBOARDING WIZARD -->
+<div class="modal-overlay" id="onbOverlay">
+  <div class="onb-card">
+    <button class="onb-x" id="onbClose" type="button" aria-label="Close">&times;</button>
+    <div class="onb-dots"><span class="onb-dot" id="onbDot0"></span><span class="onb-dot" id="onbDot1"></span><span class="onb-dot" id="onbDot2"></span></div>
+    <h2 id="onbTitle"></h2>
+    <p id="onbBody"></p>
+    <div class="onb-actions">
+      <button class="onb-skip" id="onbSkip" type="button">Skip for now</button>
+      <span class="spacer"></span>
+      <button class="onb-btn ghost" id="onbBack" type="button">Back</button>
+      <button class="onb-btn ghost" id="onbNext" type="button">Next</button>
+      <button class="onb-btn" id="onbGo" type="button">Take me there</button>
+    </div>
   </div>
 </div>
 
@@ -1254,6 +1290,7 @@ async function showApp(){
   $('landing').style.display='none';$('app').style.display='block';$('appEmail').textContent=E||'';
   try{U=await api('/api/auth/profile');$('appEmail').textContent=U.name||U.email||E}catch(e){}
   await fetchBooks();
+  if(U && !U.onboarding_completed && books.length===0){ openOnboarding(); }
   var raw=location.hash.replace('#','').split('?')[0];
   var parts=raw.split('/');
   var h=parts[0];
@@ -2237,6 +2274,9 @@ $('exportBtn').addEventListener('click',function(){
   window.open('/api/books/'+encodeURIComponent(bookId)+'/export/'+selExportFmt+params,'_blank');
 });
 
+var replayBtn=document.getElementById('replayOnb');
+if(replayBtn)replayBtn.addEventListener('click',openOnboarding);
+
 // SETTINGS
 async function loadSettings(){
   if(!U)try{U=await api('/api/auth/profile')}catch(e){}
@@ -2938,6 +2978,49 @@ async function loadPnl(){
     tbody.innerHTML=h;
   }catch(e){$('pnlTable').innerHTML='<tr><td colspan="5" style="text-align:center;color:var(--text-light)">Failed to load P&amp;L</td></tr>';}
 }
+
+// ONBOARDING WIZARD
+function receiptsInAddress(){
+  var h=location.hostname, m=h.match(/^([a-z0-9-]+)\\.weaveledger\\.app$/);
+  return m ? m[1]+'@receipts.weaveledger.app' : null;
+}
+var onbSteps=[
+  {title:'Create your first book',body:'Books hold your receipts, budgets, and reports. Create one to get started — you can have more than one (personal, business, a client).',page:'dashboard'},
+  {title:'Add an expense',body:'Snap a photo, forward an email, or upload a PDF. WeaveHub AI extracts the merchant, amount, date, and category for you.',page:'expenses'},
+  {title:'Email receipts in',body:'',page:'dashboard'}
+];
+var onbStep=0;
+function renderOnb(){
+  var s=onbSteps[onbStep];
+  document.getElementById('onbTitle').textContent=s.title;
+  var body=s.body;
+  if(onbStep===2){
+    var addr=receiptsInAddress();
+    body=addr ? 'The email you signed up with already works. Forward receipts to '+addr+' and they file themselves into your ledger.'
+              : 'The email you signed up with already works. Once inbound email is configured on your instance, forward receipts and they file themselves.';
+  }
+  document.getElementById('onbBody').textContent=body;
+  for(var i=0;i<3;i++)document.getElementById('onbDot'+i).className='onb-dot'+(i===onbStep?' on':'');
+  document.getElementById('onbBack').style.display=onbStep===0?'none':'';
+  document.getElementById('onbNext').style.display=onbStep<2?'':'none';
+  document.getElementById('onbGo').textContent=onbStep===2?'Finish':'Take me there';
+}
+function openOnboarding(){onbStep=0;renderOnb();document.getElementById('onbOverlay').classList.add('show');}
+function closeOnboarding(){document.getElementById('onbOverlay').classList.remove('show');}
+function completeOnboarding(){
+  closeOnboarding();
+  api('/api/auth/preferences',{method:'PUT',body:{onboarding_completed:true}}).catch(function(){});
+  if(U)U.onboarding_completed=true;
+}
+document.getElementById('onbBack').addEventListener('click',function(){if(onbStep>0){onbStep--;renderOnb();}});
+document.getElementById('onbNext').addEventListener('click',function(){if(onbStep<2){onbStep++;renderOnb();}});
+document.getElementById('onbSkip').addEventListener('click',completeOnboarding);
+document.getElementById('onbClose').addEventListener('click',completeOnboarding);
+document.getElementById('onbGo').addEventListener('click',function(){
+  var page=onbSteps[onbStep].page;
+  completeOnboarding();
+  navigate(page);
+});
 
 // INIT — must run after all DOM helpers and event listeners are set up
 if(T)showApp();
