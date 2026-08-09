@@ -222,7 +222,7 @@ export async function changePassword(request: Request, env: Env, userId: string)
 
 export async function getProfile(request: Request, env: Env, userId: string): Promise<Response> {
   const user = await env.DB.prepare(
-    'SELECT id, email, name, role, mfa_enabled, ai_provider, weavehub_ai_enabled, anthropic_api_key, openai_api_key, weavehub_ai_key, subscription_tier, subscription_expires_at, onboarding_completed, created_at FROM users WHERE id = ?'
+    'SELECT id, email, name, role, mfa_enabled, ai_provider, weavehub_ai_enabled, anthropic_api_key, openai_api_key, weavehub_ai_key, subscription_tier, subscription_expires_at, onboarding_completed, default_book_id, created_at FROM users WHERE id = ?'
   ).bind(userId).first<Record<string, unknown>>();
 
   if (!user) return error('User not found', 404);
@@ -533,7 +533,7 @@ export async function listLinkedEmails(request: Request, env: Env, userId: strin
 }
 
 export async function updatePreferences(request: Request, env: Env, userId: string): Promise<Response> {
-  const body = await request.json<{ ai_provider?: string; anthropic_api_key?: string | null; openai_api_key?: string | null; weavehub_ai_key?: string | null; onboarding_completed?: boolean }>();
+  const body = await request.json<{ ai_provider?: string; anthropic_api_key?: string | null; openai_api_key?: string | null; weavehub_ai_key?: string | null; onboarding_completed?: boolean; default_book_id?: string | null }>();
 
   if (body.ai_provider !== undefined) {
     const valid = ['anthropic', 'openai', 'weavehub'];
@@ -588,6 +588,26 @@ export async function updatePreferences(request: Request, env: Env, userId: stri
     await env.DB.prepare(
       "UPDATE users SET onboarding_completed = ?, updated_at = datetime('now') WHERE id = ?"
     ).bind(body.onboarding_completed ? 1 : 0, userId).run();
+  }
+
+  // Default book for inbound email receipts. null/'' clears it (fall back to
+  // oldest-open). A non-empty value must be a book the user owns — we don't
+  // require it to be open here (a user may pre-select a book they'll reopen),
+  // but the email handler re-checks open-ness at delivery time.
+  if (body.default_book_id !== undefined) {
+    if (body.default_book_id) {
+      const owned = await env.DB.prepare(
+        'SELECT id FROM books WHERE id = ? AND owner_id = ?'
+      ).bind(body.default_book_id, userId).first<{ id: string }>();
+      if (!owned) return error('Default book not found or not owned by you');
+      await env.DB.prepare(
+        "UPDATE users SET default_book_id = ?, updated_at = datetime('now') WHERE id = ?"
+      ).bind(body.default_book_id, userId).run();
+    } else {
+      await env.DB.prepare(
+        "UPDATE users SET default_book_id = NULL, updated_at = datetime('now') WHERE id = ?"
+      ).bind(userId).run();
+    }
   }
 
   return success(null, 'Preferences updated');
