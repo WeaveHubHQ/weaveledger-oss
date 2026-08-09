@@ -83,6 +83,21 @@ export async function updateBook(request: Request, env: Env, userId: string, boo
   return success(book);
 }
 
+// Close (finalize, read-only) or reopen a book. Owner-only, and deliberately
+// bypasses the closed-book edit gate in canAccessBook so a closed book can be
+// reopened. Enforcement of read-only lives in canAccessBook.
+export async function setBookStatus(request: Request, env: Env, userId: string, bookId: string): Promise<Response> {
+  const book = await env.DB.prepare('SELECT owner_id FROM books WHERE id = ?').bind(bookId).first<{ owner_id: string }>();
+  if (!book || book.owner_id !== userId) {
+    return error('Only the owner can close or reopen a book', 403);
+  }
+  const body = await request.json<{ status?: string }>().catch(() => ({ status: undefined }));
+  const status = body.status === 'closed' ? 'closed' : 'open';
+  await env.DB.prepare("UPDATE books SET status = ?, updated_at = datetime('now') WHERE id = ?").bind(status, bookId).run();
+  const updated = await env.DB.prepare('SELECT * FROM books WHERE id = ?').bind(bookId).first();
+  return success(updated, status === 'closed' ? 'Book closed' : 'Book reopened');
+}
+
 export async function deleteBook(request: Request, env: Env, userId: string, bookId: string): Promise<Response> {
   const book = await env.DB.prepare('SELECT owner_id FROM books WHERE id = ?').bind(bookId).first<{ owner_id: string }>();
   if (!book || book.owner_id !== userId) {

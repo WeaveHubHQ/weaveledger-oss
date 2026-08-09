@@ -4,7 +4,7 @@ import { deriveDownloadKey } from './utils/crypto';
 import { register, registrationStatus, login, changePassword, getProfile, updatePreferences, getUserApiKey, mfaSetup, mfaEnable, mfaDisable, addLinkedEmail, removeLinkedEmail, listLinkedEmails, resendLinkedEmailVerification, verifyLinkedEmailLink, forgotPassword, resetPassword, refreshAuth } from './routes/auth';
 import { getAiUsage, createAiCheckout, createAiKey } from './routes/ai';
 import { passkeyRegisterOptions, passkeyRegisterVerify, passkeyLoginOptions, passkeyLoginVerify, listPasskeys, renamePasskey, deletePasskey } from './routes/passkeys';
-import { listBooks, createBook, getBook, updateBook, deleteBook, shareBook, revokeShare, listInvitations, revokeInvitation } from './routes/books';
+import { listBooks, createBook, getBook, updateBook, setBookStatus, deleteBook, shareBook, revokeShare, listInvitations, revokeInvitation } from './routes/books';
 import { listReceipts, listAllReceipts, createReceipt, getReceipt, updateReceipt, deleteReceipt, uploadReceiptImage, getReceiptImage, getReceiptAttachment, retryReceipt, getBookSummary, cleanupStuckReceipts } from './routes/receipts';
 import { exportBook } from './services/export';
 import { listIntegrations, upsertIntegration, deleteIntegration, syncIntegration, syncAllIntegrations, listIncomeTransactions, getIncomeSummary, listPayouts, markPayoutReceived, getIncomeDashboard } from './routes/income';
@@ -317,6 +317,13 @@ const worker = {
         if (method === 'GET') return addCors(await getBook(request, env, userId, bookId));
         if (method === 'PUT' || method === 'PATCH') return paid(() => updateBook(request, env, userId, bookId));
         if (method === 'DELETE') return paid(() => deleteBook(request, env, userId, bookId));
+      }
+
+      // Close / reopen a book (owner-only; not subscription-gated so a book can
+      // always be reopened or finalized regardless of billing state).
+      const bookStatusMatch = path.match(/^\/api\/books\/([^/]+)\/status$/);
+      if (bookStatusMatch && (method === 'PUT' || method === 'POST')) {
+        return addCors(await setBookStatus(request, env, userId, bookStatusMatch[1]));
       }
 
       // Book sharing
