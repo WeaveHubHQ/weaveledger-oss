@@ -222,7 +222,7 @@ export async function changePassword(request: Request, env: Env, userId: string)
 
 export async function getProfile(request: Request, env: Env, userId: string): Promise<Response> {
   const user = await env.DB.prepare(
-    'SELECT id, email, name, role, mfa_enabled, ai_provider, weavehub_ai_enabled, anthropic_api_key, openai_api_key, weavehub_ai_key, subscription_tier, subscription_expires_at, created_at FROM users WHERE id = ?'
+    'SELECT id, email, name, role, mfa_enabled, ai_provider, weavehub_ai_enabled, anthropic_api_key, openai_api_key, weavehub_ai_key, subscription_tier, subscription_expires_at, onboarding_completed, created_at FROM users WHERE id = ?'
   ).bind(userId).first<Record<string, unknown>>();
 
   if (!user) return error('User not found', 404);
@@ -239,6 +239,7 @@ export async function getProfile(request: Request, env: Env, userId: string): Pr
     anthropic_api_key: user.anthropic_api_key ? true : false,
     openai_api_key: user.openai_api_key ? true : false,
     weavehub_ai_key: user.weavehub_ai_key ? true : false,
+    onboarding_completed: !!user.onboarding_completed,
     linked_emails: linkedEmails.results,
   });
 }
@@ -517,7 +518,7 @@ export async function listLinkedEmails(request: Request, env: Env, userId: strin
 }
 
 export async function updatePreferences(request: Request, env: Env, userId: string): Promise<Response> {
-  const body = await request.json<{ ai_provider?: string; anthropic_api_key?: string | null; openai_api_key?: string | null; weavehub_ai_key?: string | null }>();
+  const body = await request.json<{ ai_provider?: string; anthropic_api_key?: string | null; openai_api_key?: string | null; weavehub_ai_key?: string | null; onboarding_completed?: boolean }>();
 
   if (body.ai_provider !== undefined) {
     const valid = ['anthropic', 'openai', 'weavehub'];
@@ -566,6 +567,12 @@ export async function updatePreferences(request: Request, env: Env, userId: stri
     await env.DB.prepare(
       "UPDATE users SET weavehub_ai_key = ?, updated_at = datetime('now') WHERE id = ?"
     ).bind(encrypted, userId).run();
+  }
+
+  if (body.onboarding_completed !== undefined) {
+    await env.DB.prepare(
+      "UPDATE users SET onboarding_completed = ?, updated_at = datetime('now') WHERE id = ?"
+    ).bind(body.onboarding_completed ? 1 : 0, userId).run();
   }
 
   return success(null, 'Preferences updated');
