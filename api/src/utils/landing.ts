@@ -1090,18 +1090,27 @@ $('passkeyLoginBtn').addEventListener('click',async function(){
 // press needed. The request stays pending until the user picks one or submits
 // the password form normally; NotAllowedError/AbortError just means they went
 // another way, so it is swallowed silently.
-(async function initConditionalPasskey(){
+// Arm the conditional-UI (autofill) passkey flow. Only call while the LOGIN
+// screen is showing: arming it while a session exists makes password managers
+// (e.g. 1Password) intercept the pending WebAuthn request and pop a passkey
+// prompt on every refresh even though the user is already signed in. It also
+// mints a server challenge per call, so don't arm it redundantly.
+var conditionalPasskeyArmed=false;
+async function armConditionalPasskey(){
   try{
+    if(T||conditionalPasskeyArmed)return; // signed in, or a request is already pending
     if(!window.PublicKeyCredential||!PublicKeyCredential.isConditionalMediationAvailable)return;
     if(!(await PublicKeyCredential.isConditionalMediationAvailable()))return;
+    conditionalPasskeyArmed=true;
     var d=await passkeyOptions();var opts=d.publicKey;
     var cred=await navigator.credentials.get({
       mediation:'conditional',
       publicKey:{challenge:b64urlToBuf(opts.challenge),rpId:opts.rpId,timeout:opts.timeout,userVerification:opts.userVerification,allowCredentials:[]}
     });
     if(cred)await completePasskeyLogin(cred,d.challenge_id);
-  }catch(e){ /* user chose password/another method, or no passkey — ignore */ }
-})();
+  }catch(e){ conditionalPasskeyArmed=false; /* user chose password/another method, or no passkey — ignore */ }
+}
+armConditionalPasskey();
 // A friendly default like "Chrome on macOS" so a new passkey is named without
 // interrupting the create ceremony with a browser prompt. Renameable in the list.
 function defaultPasskeyName(){
@@ -1187,7 +1196,8 @@ $('addPasskeyBtn').addEventListener('click',async function(){
   }finally{btn.disabled=false;btn.textContent='+ Add a Passkey'}
 });
 $('logoutBtn').addEventListener('click',function(){T=null;E=null;U=null;localStorage.removeItem('wl_token');localStorage.removeItem('wl_email');
-  $('landing').style.display='';$('app').style.display='none'});
+  $('landing').style.display='';$('app').style.display='none';
+  armConditionalPasskey()}); // login screen is showing again — re-arm autofill passkey
 
 // Forgot password
 $('forgotPassLink').addEventListener('click',function(e){
