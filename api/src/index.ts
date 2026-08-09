@@ -3,6 +3,7 @@ import { authenticate, authenticateDownload, checkRateLimit, canAccessBook, requ
 import { deriveDownloadKey } from './utils/crypto';
 import { register, login, changePassword, getProfile, updatePreferences, getUserApiKey, mfaSetup, mfaEnable, mfaDisable, addLinkedEmail, removeLinkedEmail, listLinkedEmails, resendLinkedEmailVerification, verifyLinkedEmailLink, forgotPassword, resetPassword, refreshAuth } from './routes/auth';
 import { getAiUsage, createAiCheckout, createAiKey } from './routes/ai';
+import { passkeyRegisterOptions, passkeyRegisterVerify, passkeyLoginOptions, passkeyLoginVerify, listPasskeys, renamePasskey, deletePasskey } from './routes/passkeys';
 import { listBooks, createBook, getBook, updateBook, deleteBook, shareBook, revokeShare, listInvitations, revokeInvitation } from './routes/books';
 import { listReceipts, createReceipt, getReceipt, updateReceipt, deleteReceipt, uploadReceiptImage, getReceiptImage, getReceiptAttachment, retryReceipt, getBookSummary, cleanupStuckReceipts } from './routes/receipts';
 import { exportBook } from './services/export';
@@ -65,6 +66,18 @@ const worker = {
     };
 
     try {
+      // Hosted grace mode (set by the dispatcher, never trusted from clients
+      // because the dispatcher strips inbound copies): the instance is
+      // read-only — login/refresh and all GETs (browsing + export) keep
+      // working, everything else is declined with a resubscribe pointer.
+      if (request.headers.get('x-tenant-grace') === '1'
+          && !['GET', 'HEAD', 'OPTIONS'].includes(method)
+          && path !== '/api/auth/login' && path !== '/api/auth/refresh') {
+        return addCors(json({
+          error: 'This ledger is in read-only mode: the subscription has ended. Browsing and exports still work. Resubscribe at https://weaveledger.app to restore full access.',
+        }, 402));
+      }
+
       // Platform-mode internal routes (dispatcher-to-tenant, secret-authed).
       // Mounted only when a DISPATCH_SECRET is configured on this deployment.
       if (path.startsWith('/internal/') && env.DISPATCH_SECRET) {
@@ -124,6 +137,17 @@ const worker = {
         const limited = await checkRateLimit(request, env.DB, 20, 60_000);
         if (limited) return addCors(limited);
         return addCors(await refreshAuth(request, env));
+      }
+      // Passkey login ceremony (public — the assertion IS the authentication)
+      if (path === '/api/auth/passkeys/login/options' && method === 'POST') {
+        const limited = await checkRateLimit(request, env.DB, 10, 60_000);
+        if (limited) return addCors(limited);
+        return addCors(await passkeyLoginOptions(request, env));
+      }
+      if (path === '/api/auth/passkeys/login/verify' && method === 'POST') {
+        const limited = await checkRateLimit(request, env.DB, 10, 60_000);
+        if (limited) return addCors(limited);
+        return addCors(await passkeyLoginVerify(request, env));
       }
       if (path === '/api/health') {
         return addCors(json({ status: 'ok', version: '1.3.1' }));
@@ -217,6 +241,28 @@ const worker = {
         const limited = await checkRateLimit(request, env.DB, 5, 60_000);
         if (limited) return addCors(limited);
         return addCors(await mfaDisable(request, env, userId));
+      }
+
+      // Passkey management routes (authenticated)
+      if (path === '/api/auth/passkeys/register/options' && method === 'POST') {
+        const limited = await checkRateLimit(request, env.DB, 10, 60_000);
+        if (limited) return addCors(limited);
+        return addCors(await passkeyRegisterOptions(request, env, userId));
+      }
+      if (path === '/api/auth/passkeys/register/verify' && method === 'POST') {
+        const limited = await checkRateLimit(request, env.DB, 10, 60_000);
+        if (limited) return addCors(limited);
+        return addCors(await passkeyRegisterVerify(request, env, userId));
+      }
+      if (path === '/api/auth/passkeys' && method === 'GET') {
+        return addCors(await listPasskeys(request, env, userId));
+      }
+      const passkeyMatch = path.match(/^\/api\/auth\/passkeys\/([^/]+)$/);
+      if (passkeyMatch && method === 'PATCH') {
+        return addCors(await renamePasskey(request, env, userId, passkeyMatch[1]));
+      }
+      if (passkeyMatch && method === 'DELETE') {
+        return addCors(await deletePasskey(request, env, userId, passkeyMatch[1]));
       }
 
       // Linked email routes
