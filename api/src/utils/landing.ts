@@ -1728,6 +1728,15 @@ function statusBadge(s){return el('span',{className:'status-badge status-'+(s||'
 function sourceBadge(s){return el('span',{className:'source-badge'},(s||'manual'))}
 
 // RECEIPT DETAIL
+function setReceiptActionsEnabled(enabled){
+  ['editReceiptBtn','makeRecurringBtn','deleteReceiptBtn'].forEach(function(id){
+    var b=$(id);if(!b)return;
+    b.disabled=!enabled;
+    b.style.opacity=enabled?'':'.45';
+    b.style.cursor=enabled?'':'not-allowed';
+    b.title=enabled?'':'This book is closed. Reopen it to make changes.';
+  });
+}
 async function openReceipt(bookId,receiptId){
   var panel=$('detailPanel');panel.classList.add('open');
   $('detailContent').replaceChildren(el('div',{className:'loading'},'Loading...'));
@@ -1740,6 +1749,9 @@ async function openReceipt(bookId,receiptId){
   try{
     selReceipt=await api('/api/books/'+encodeURIComponent(bookId)+'/receipts/'+encodeURIComponent(receiptId));
     selReceipt._bookId=bookId;
+    var bk=books.filter(function(b){return b.id===bookId})[0];
+    selReceipt._bookClosed=!!(bk&&bk.status==='closed');
+    setReceiptActionsEnabled(!selReceipt._bookClosed);
     $('detailTitle').textContent=selReceipt.merchant||'Receipt';
     renderReceiptDetail(selReceipt);
   }catch(e){$('detailContent').replaceChildren(el('p',{className:'loading'},e.message))}
@@ -1774,6 +1786,9 @@ function loadAttachment(viewer,bookId,receiptId,index,ctHint){
 }
 function renderReceiptDetail(r){
   var c=$('detailContent');c.replaceChildren();
+  if(r._bookClosed){
+    c.appendChild(el('div',{style:{background:'#fef3cd',color:'#856404',padding:'8px 12px',borderRadius:'var(--radius)',fontSize:'.8rem',marginBottom:'12px',border:'1px solid rgba(133,100,4,.2)'}},'This book is closed (read-only). Reopen it in Settings → Books to edit or delete receipts.'));
+  }
   if(r.image_key){
     var atts=[];try{if(r.attachments)atts=JSON.parse(r.attachments)}catch(e){}
     if(atts.length>1){

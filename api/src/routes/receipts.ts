@@ -2,7 +2,7 @@ import { startReceiptProcessing } from '../workflows/receipt-processor';
 import { Env } from '../types';
 import { generateId } from '../utils/crypto';
 import { error, success } from '../utils/response';
-import { canAccessBook } from '../middleware/auth';
+import { canAccessBook, bookEditDeniedError } from '../middleware/auth';
 
 interface ReceiptFilters {
   category?: string;
@@ -144,7 +144,7 @@ export async function listAllReceipts(request: Request, env: Env, userId: string
 
 export async function createReceipt(request: Request, env: Env, userId: string, bookId: string): Promise<Response> {
   if (!await canAccessBook(env.DB, userId, bookId, 'member')) {
-    return error('Access denied', 403);
+    return await bookEditDeniedError(env.DB, userId, bookId);
   }
 
   const body = await request.json<{
@@ -189,7 +189,7 @@ export async function getReceipt(request: Request, env: Env, userId: string, boo
 
 export async function updateReceipt(request: Request, env: Env, userId: string, bookId: string, receiptId: string): Promise<Response> {
   if (!await canAccessBook(env.DB, userId, bookId, 'member')) {
-    return error('Access denied', 403);
+    return await bookEditDeniedError(env.DB, userId, bookId);
   }
 
   const body = await request.json<Record<string, unknown>>();
@@ -207,7 +207,7 @@ export async function updateReceipt(request: Request, env: Env, userId: string, 
   if (body.book_id !== undefined && body.book_id !== bookId) {
     const targetBookId = body.book_id as string;
     if (!await canAccessBook(env.DB, userId, targetBookId, 'member')) {
-      return error('Access denied to target book', 403);
+      return await bookEditDeniedError(env.DB, userId, targetBookId, 'The destination book is closed. Reopen it to move receipts into it.');
     }
   }
 
@@ -239,7 +239,7 @@ export async function updateReceipt(request: Request, env: Env, userId: string, 
 
 export async function deleteReceipt(request: Request, env: Env, userId: string, bookId: string, receiptId: string): Promise<Response> {
   if (!await canAccessBook(env.DB, userId, bookId, 'member')) {
-    return error('Access denied', 403);
+    return await bookEditDeniedError(env.DB, userId, bookId);
   }
 
   const receipt = await env.DB.prepare('SELECT image_key FROM receipts WHERE id = ? AND book_id = ?').bind(receiptId, bookId).first<{ image_key: string | null }>();
@@ -255,7 +255,7 @@ export async function deleteReceipt(request: Request, env: Env, userId: string, 
 
 export async function uploadReceiptImage(request: Request, env: Env, userId: string, bookId: string, waitUntil?: (p: Promise<unknown>) => void): Promise<Response> {
   if (!await canAccessBook(env.DB, userId, bookId, 'member')) {
-    return error('Access denied', 403);
+    return await bookEditDeniedError(env.DB, userId, bookId);
   }
 
   const contentType = request.headers.get('Content-Type') || '';
@@ -376,7 +376,7 @@ export async function getReceiptAttachment(request: Request, env: Env, userId: s
 
 export async function retryReceipt(request: Request, env: Env, userId: string, bookId: string, receiptId: string, waitUntil?: (p: Promise<unknown>) => void): Promise<Response> {
   if (!await canAccessBook(env.DB, userId, bookId, 'member')) {
-    return error('Access denied', 403);
+    return await bookEditDeniedError(env.DB, userId, bookId);
   }
 
   const receipt = await env.DB.prepare(

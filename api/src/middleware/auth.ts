@@ -187,6 +187,24 @@ export async function canAccessBook(db: D1Database, userId: string, bookId: stri
   return userLevel >= requiredLevel;
 }
 
+// Build the right error Response when a *mutating* action on a book is denied.
+// Call this only after canAccessBook(..., edit) has already returned false. It
+// distinguishes a closed (finalized, read-only) book — where the fix is to
+// reopen it — from a genuine permission failure, so the client can show an
+// actionable message instead of a bare "Access denied".
+export async function bookEditDeniedError(
+  db: D1Database, userId: string, bookId: string,
+  closedMsg = 'This book is closed. Reopen it to make changes.',
+): Promise<Response> {
+  const book = await db.prepare('SELECT status FROM books WHERE id = ?').bind(bookId).first<{ status?: string }>();
+  // Only surface the closed reason to someone who can otherwise read the book;
+  // for everyone else it's a plain access denial (don't leak book state).
+  if (book?.status === 'closed' && await canAccessBook(db, userId, bookId)) {
+    return error(closedMsg, 403);
+  }
+  return error('Access denied', 403);
+}
+
 export async function getBookRole(db: D1Database, userId: string, bookId: string): Promise<'owner' | 'admin' | 'member' | 'reader' | null> {
   const book = await db.prepare('SELECT owner_id FROM books WHERE id = ?').bind(bookId).first<{ owner_id: string }>();
   if (!book) return null;
