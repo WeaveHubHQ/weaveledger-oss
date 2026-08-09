@@ -451,8 +451,15 @@ tr{cursor:pointer}
       <button class="btn btn-gold" id="addPasskeyBtn" style="margin-top:12px">+ Add a Passkey</button>
     </div>
     <div class="card" id="linkedEmailsCard">
-      <div class="card-header"><span class="card-title">Linked Email Addresses</span></div>
-      <p style="font-size:.85rem;color:var(--text-light);padding:0 0 12px">Add email addresses you send receipts from. Receipts emailed from any linked address will be attributed to your account.</p>
+      <div class="card-header"><span class="card-title">Email Receipts In</span></div>
+      <div id="emailInAddrRow" style="display:none;align-items:center;gap:8px;background:var(--cream);border:1px solid var(--cream-dark);border-radius:var(--radius);padding:10px 14px;margin-bottom:12px">
+        <div style="flex:1;min-width:0">
+          <div style="font-size:.72rem;text-transform:uppercase;letter-spacing:.05em;color:var(--text-light)">Your receipts address</div>
+          <div id="emailInAddr" style="font-family:'JetBrains Mono',monospace;font-size:.85rem;color:var(--navy);overflow-wrap:anywhere"></div>
+        </div>
+        <button class="btn btn-sm btn-outline" id="copyEmailInAddr" style="color:var(--navy);border-color:var(--cream-dark);flex-shrink:0">Copy</button>
+      </div>
+      <p style="font-size:.85rem;color:var(--text-light);padding:0 0 12px"><span id="emailInHowTo">Forward or send receipt emails to the address above and they file themselves into your ledger. </span>Add email addresses you send receipts from. Receipts emailed from any linked address will be attributed to your account.</p>
       <div id="linkedEmailsList"></div>
       <div style="display:flex;gap:8px;margin-top:12px">
         <input class="form-input" type="email" id="newLinkedEmail" placeholder="another@email.com" style="flex:1">
@@ -2344,6 +2351,7 @@ async function loadSettings(){
     renderMfaSettings(U.mfa_enabled);
     loadPasskeys();
     renderLinkedEmails(U.linked_emails||[]);
+    renderEmailInAddress();
     renderDefaultEmailBook(U.default_book_id);
     // AI Provider
     var prov=U.ai_provider||'anthropic';
@@ -2438,6 +2446,20 @@ async function renderDefaultEmailBook(current){
       try{await api('/api/auth/preferences',{method:'PUT',body:{default_book_id:v||null}});U.default_book_id=v||null;toast(v?'Default email book updated':'Email receipts will use your oldest open book')}catch(e){toast(e.message,'error')}
     };
   }catch(e){}
+}
+function renderEmailInAddress(){
+  var addr=receiptsInAddress();
+  var row=$('emailInAddrRow');if(!row)return;
+  if(!addr){row.style.display='none';var ht=$('emailInHowTo');if(ht)ht.textContent='';return}
+  row.style.display='flex';
+  $('emailInAddr').textContent=addr;
+  var btn=$('copyEmailInAddr');
+  btn.onclick=function(){
+    navigator.clipboard.writeText(addr).then(function(){
+      btn.textContent='Copied!';
+      setTimeout(function(){btn.textContent='Copy'},1600);
+    }).catch(function(){toast('Could not copy — long-press the address instead','error')});
+  };
 }
 function renderLinkedEmails(emails){
   var c=$('linkedEmailsList');if(!c)return;c.replaceChildren();
@@ -3112,7 +3134,9 @@ async function loadPnl(){
 // ONBOARDING WIZARD
 function receiptsInAddress(){
   var h=location.hostname, m=h.match(/^([a-z0-9-]+)\\.weaveledger\\.app$/);
-  return m ? m[1]+'@receipts.weaveledger.app' : null;
+  if(m)return m[1]+'@receipts.weaveledger.app';
+  if(h==='ledger.weavehub.app')return 'receipts@weavehub.app';
+  return null; // self-hosted: inbound routing is instance-specific
 }
 var onbSteps=[
   {title:'Create your first book',body:'Books hold your receipts, budgets, and reports. Create one to get started — you can have more than one (personal, business, a client).',page:'dashboard',action:'newBook'},
