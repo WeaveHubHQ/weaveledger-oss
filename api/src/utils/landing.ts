@@ -76,6 +76,8 @@ body{font-family:var(--font-body);color:var(--text);background:var(--cream);line
 /* APP LAYOUT */
 .app{display:none;min-height:100vh;background:var(--cream)}
 .app-nav{background:var(--navy);border-bottom:1px solid rgba(201,168,76,.15);padding:0 24px;height:56px;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;z-index:50}
+.logo{font-family:var(--font-display);font-size:1.35rem;color:var(--cream);letter-spacing:-.02em;text-decoration:none}
+.logo span{color:var(--gold)}
 .app-nav-left{display:flex;align-items:center;gap:32px}
 .app-nav-links{display:flex;gap:4px}
 .app-nav-links a{color:rgba(245,240,232,.5);text-decoration:none;font-size:.82rem;font-weight:500;padding:6px 14px;border-radius:var(--radius);transition:all .2s}
