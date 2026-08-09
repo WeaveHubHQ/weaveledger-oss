@@ -1500,6 +1500,7 @@ function showBookModal(book){
         if(isEdit)await api('/api/books/'+book.id,{method:'PUT',body:{name:name,description:$('bookDesc').value||null,currency:$('bookCur').value}});
         else await api('/api/books',{method:'POST',body:{name:name,description:$('bookDesc').value||null,currency:$('bookCur').value}});
         closeModal();toast(isEdit?'Book updated':'Book created');loadBooks();fetchBooks();
+        if(!isEdit&&onbResumeAfterBook){onbResumeAfterBook=false;document.getElementById('onbOverlay').classList.add('show');renderOnb();}
       }catch(e){toast(e.message,'error')}
     }},isEdit?'Save':'Create')
   );
@@ -2997,6 +2998,7 @@ var onbSteps=[
   {title:'Email receipts in',body:'',page:'dashboard'}
 ];
 var onbStep=0;
+var onbResumeAfterBook=false;
 function renderOnb(){
   var s=onbSteps[onbStep];
   document.getElementById('onbTitle').textContent=s.title;
@@ -3025,9 +3027,18 @@ document.getElementById('onbSkip').addEventListener('click',completeOnboarding);
 document.getElementById('onbClose').addEventListener('click',completeOnboarding);
 document.getElementById('onbGo').addEventListener('click',function(){
   var step=onbSteps[onbStep];
+  if(step.action==='newBook'){
+    // Guided: open New Book directly, keep the walkthrough alive, and advance to
+    // the next step once the book is actually created (see showBookModal).
+    onbResumeAfterBook=true;
+    onbStep=Math.min(onbStep+1,onbSteps.length-1);
+    closeOnboarding();
+    navigate('dashboard');
+    showBookModal();
+    return;
+  }
   completeOnboarding();
-  if(step.action==='newBook'){ navigate('dashboard'); showBookModal(); }
-  else navigate(step.page);
+  navigate(step.page);
 });
 
 // INIT — must run after all DOM helpers and event listeners are set up
