@@ -3,6 +3,19 @@ import { generateId, hashPassword, verifyPassword, createJWT, encryptValue, decr
 import { generateSecret, getOTPAuthURL, verifyTOTP } from '../utils/totp';
 import { json, error, success } from '../utils/response';
 
+// Public, unauthenticated: tells the login screen whether to offer account
+// creation and whether this is a brand-new (no-users) instance, so a freshly
+// provisioned tenant greets the owner with "Create your account" instead of
+// "Welcome back". Never leaks user data — only a boolean and the mode.
+export async function registrationStatus(request: Request, env: Env): Promise<Response> {
+  const mode = env.REGISTRATION || 'open';
+  const hasUsers = !!(await env.DB.prepare('SELECT 1 FROM users LIMIT 1').first());
+  // Whether the generic (token-less) "Create an account" link should appear.
+  // 'invite' needs a per-email invitation, so the generic link stays hidden.
+  const canRegister = mode === 'open' || (mode === 'first_user' && !hasUsers);
+  return success({ mode, hasUsers, canRegister });
+}
+
 export async function register(request: Request, env: Env): Promise<Response> {
   const body = await request.json<{ email: string; password: string; name: string }>();
   if (!body.email || !body.password || !body.name) {

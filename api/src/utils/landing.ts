@@ -259,7 +259,8 @@ tr{cursor:pointer}
       <div style="display:flex;align-items:center;gap:12px;margin:16px 0 12px"><div style="flex:1;height:1px;background:rgba(245,240,232,.12)"></div><span style="font-size:.72rem;color:rgba(245,240,232,.45);text-transform:uppercase;letter-spacing:.08em">or</span><div style="flex:1;height:1px;background:rgba(245,240,232,.12)"></div></div>
       <button type="button" class="btn" id="passkeyLoginBtn" style="width:100%;justify-content:center;background:rgba(245,240,232,.06);color:var(--cream,#F5F0E8);border:1px solid rgba(245,240,232,.25);border-radius:12px;padding:13px;font-size:.95rem;font-weight:600">&#x1F511; Sign in with a passkey</button>
     </div>
-    <div class="auth-aux">
+    <div class="auth-aux" style="display:flex;justify-content:space-between;gap:12px">
+      <a href="#" id="registerToggle" style="display:none">Create an account</a>
       <a href="#" id="forgotPassLink">Forgot password?</a>
     </div>
     <div id="forgotPassForm" style="display:none">
@@ -964,6 +965,28 @@ $('loginForm').addEventListener('submit',function(e){
   .catch(function(e){err.textContent=e.message;err.style.display='block'})
   .finally(function(){btn.disabled=false;btn.textContent=isReg?'Create Account':'Sign In'});
 });
+function setAuthMode(reg){
+  isReg=reg;
+  document.getElementById('nameGroup').style.display=reg?'':'none';
+  document.getElementById('authTitle').textContent=reg?'Create your account':'Welcome back';
+  document.getElementById('authDesc').textContent=reg?'Set up your ledger — this first account is the owner.':'Sign in to your ledger.';
+  $('loginBtn').textContent=reg?'Create Account':'Sign In';
+  var t=document.getElementById('registerToggle');if(t)t.textContent=reg?'Have an account? Sign in':'Create an account';
+  var pr=document.getElementById('passkeyRow');if(pr&&window.PublicKeyCredential)pr.style.display=reg?'none':'';
+  var f=document.getElementById('loginError');if(f)f.style.display='none';
+  if(reg){var rn=document.getElementById('regName');if(rn)rn.focus()}
+}
+(function initRegistration(){
+  var rt=document.getElementById('registerToggle');
+  if(rt)rt.addEventListener('click',function(e){e.preventDefault();setAuthMode(!isReg)});
+  // Ask the server whether to offer account creation; a brand-new (no-users)
+  // instance opens straight into "Create your account".
+  fetch('/api/auth/registration-status').then(function(r){return r.json()}).then(function(res){
+    var d=(res&&res.data)||res||{};
+    if(d.canRegister&&rt)rt.style.display='';
+    if(d.canRegister&&!d.hasUsers)setAuthMode(true);
+  }).catch(function(){});
+})();
 function showMfaPrompt(){
   var form=$('loginForm');var existing=document.getElementById('mfaGroup');if(existing)return;
   var group=el('div',{id:'mfaGroup',className:'form-group',style:{marginBottom:'18px'}},[

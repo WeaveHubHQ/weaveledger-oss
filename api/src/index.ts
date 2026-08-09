@@ -1,7 +1,7 @@
 import { Env } from './types';
 import { authenticate, authenticateDownload, checkRateLimit, canAccessBook, requireSubscription } from './middleware/auth';
 import { deriveDownloadKey } from './utils/crypto';
-import { register, login, changePassword, getProfile, updatePreferences, getUserApiKey, mfaSetup, mfaEnable, mfaDisable, addLinkedEmail, removeLinkedEmail, listLinkedEmails, resendLinkedEmailVerification, verifyLinkedEmailLink, forgotPassword, resetPassword, refreshAuth } from './routes/auth';
+import { register, registrationStatus, login, changePassword, getProfile, updatePreferences, getUserApiKey, mfaSetup, mfaEnable, mfaDisable, addLinkedEmail, removeLinkedEmail, listLinkedEmails, resendLinkedEmailVerification, verifyLinkedEmailLink, forgotPassword, resetPassword, refreshAuth } from './routes/auth';
 import { getAiUsage, createAiCheckout, createAiKey } from './routes/ai';
 import { passkeyRegisterOptions, passkeyRegisterVerify, passkeyLoginOptions, passkeyLoginVerify, listPasskeys, renamePasskey, deletePasskey } from './routes/passkeys';
 import { listBooks, createBook, getBook, updateBook, deleteBook, shareBook, revokeShare, listInvitations, revokeInvitation } from './routes/books';
@@ -113,6 +113,9 @@ const worker = {
       }
 
       // Public routes (rate limited)
+      if (path === '/api/auth/registration-status' && method === 'GET') {
+        return addCors(await registrationStatus(request, env));
+      }
       if (path === '/api/auth/register' && method === 'POST') {
         const limited = await checkRateLimit(request, env.DB, 5, 60_000);
         if (limited) return addCors(limited);
