@@ -1326,7 +1326,7 @@ var dashIncomeSummary=null;
 async function loadDashboard(){
   var bookId=$('dashBookSelect').value;
   if(!bookId&&books.length)bookId=books[0].id;
-  if(!bookId){$('dashStats').replaceChildren(el('div',{className:'empty'},[el('div',{className:'empty-icon'},'\\uD83D\\uDCCA'),el('p',null,'Create a book to see your dashboard.')]));return}
+  if(!bookId){$('dashStats').replaceChildren(el('div',{className:'empty'},[el('div',{className:'empty-icon'},'\\uD83D\\uDCCA'),el('p',null,'Create a book to see your dashboard.'),el('button',{className:'btn btn-gold',style:{marginTop:'12px'},onclick:function(){showBookModal()}},'+ Create a book')]));return}
   $('dashBookSelect').value=bookId;
   try{
     var [expSummary,incSummary,rc]=await Promise.all([
@@ -2498,8 +2498,15 @@ function getBookId(){
 // Shared "no book yet" empty state so book-scoped pages never hang on "Loading..."
 // for a fresh account. Points the user at creating their first book.
 function bookRequiredState(ids){
-  var html='<div class="empty" style="padding:24px;text-align:center"><div class="empty-icon">\uD83D\uDCD8</div><p>Create a book to get started.</p><p style="font-size:.85rem;color:var(--text-light);margin-top:4px">Books hold your receipts, budgets, and reports. Add one from the Overview tab.</p></div>';
-  ids.forEach(function(id){var e=document.getElementById(id);if(e)e.innerHTML=html;});
+  ids.forEach(function(id){
+    var e=document.getElementById(id);if(!e)return;
+    e.replaceChildren(el('div',{className:'empty',style:{padding:'24px',textAlign:'center'}},[
+      el('div',{className:'empty-icon'},'\uD83D\uDCD8'),
+      el('p',null,'Create a book to get started.'),
+      el('p',{style:{fontSize:'.85rem',color:'var(--text-light)',margin:'4px 0 14px'}},'Books hold your receipts, budgets, and reports.'),
+      el('button',{className:'btn btn-gold',onclick:function(){showBookModal()}},'+ Create a book')
+    ]));
+  });
 }
 async function loadBudgets(){
   var bookId=getBookId();if(!bookId){bookRequiredState(['budgetList']);return;}
@@ -2985,7 +2992,7 @@ function receiptsInAddress(){
   return m ? m[1]+'@receipts.weaveledger.app' : null;
 }
 var onbSteps=[
-  {title:'Create your first book',body:'Books hold your receipts, budgets, and reports. Create one to get started — you can have more than one (personal, business, a client).',page:'dashboard'},
+  {title:'Create your first book',body:'Books hold your receipts, budgets, and reports. Create one to get started — you can have more than one (personal, business, a client).',page:'dashboard',action:'newBook'},
   {title:'Add an expense',body:'Snap a photo, forward an email, or upload a PDF. WeaveHub AI extracts the merchant, amount, date, and category for you.',page:'expenses'},
   {title:'Email receipts in',body:'',page:'dashboard'}
 ];
@@ -3017,9 +3024,10 @@ document.getElementById('onbNext').addEventListener('click',function(){if(onbSte
 document.getElementById('onbSkip').addEventListener('click',completeOnboarding);
 document.getElementById('onbClose').addEventListener('click',completeOnboarding);
 document.getElementById('onbGo').addEventListener('click',function(){
-  var page=onbSteps[onbStep].page;
+  var step=onbSteps[onbStep];
   completeOnboarding();
-  navigate(page);
+  if(step.action==='newBook'){ navigate('dashboard'); showBookModal(); }
+  else navigate(step.page);
 });
 
 // INIT — must run after all DOM helpers and event listeners are set up
