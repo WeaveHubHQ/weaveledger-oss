@@ -2455,8 +2455,14 @@ function getBookId(){
   ms.addEventListener('change',loadBudgets);
   ys.addEventListener('change',loadBudgets);
 })();
+// Shared "no book yet" empty state so book-scoped pages never hang on "Loading..."
+// for a fresh account. Points the user at creating their first book.
+function bookRequiredState(ids){
+  var html='<div class="empty" style="padding:24px;text-align:center"><div class="empty-icon">\uD83D\uDCD8</div><p>Create a book to get started.</p><p style="font-size:.85rem;color:var(--text-light);margin-top:4px">Books hold your receipts, budgets, and reports. Add one from the Overview tab.</p></div>';
+  ids.forEach(function(id){var e=document.getElementById(id);if(e)e.innerHTML=html;});
+}
 async function loadBudgets(){
-  var bookId=getBookId();if(!bookId)return;
+  var bookId=getBookId();if(!bookId){bookRequiredState(['budgetList']);return;}
   var month=($('budgetMonth')||{}).value;
   var year=($('budgetYear')||{}).value;
   var qs='';
@@ -2520,7 +2526,7 @@ function fmtCur(a,c){try{return new Intl.NumberFormat('en-US',{style:'currency',
 function reportTotalsText(totals){if(!totals||!totals.length)return fmtCur(0,'USD');return totals.map(function(t){return fmtCur(t.total,t.currency)}).join(' + ')}
 function reportBadge(status){var c=REPORT_STATUS_COLORS[status]||'#6b7280';return '<span style="font-size:.72rem;font-weight:600;padding:2px 10px;border-radius:12px;background:'+c+'1f;color:'+c+'">'+escH(status)+'</span>'}
 async function loadReports(){
-  var bookId=getBookId();if(!bookId)return;
+  var bookId=getBookId();if(!bookId){bookRequiredState(['reportList']);return;}
   try{
     var rs=await api('/api/books/'+encodeURIComponent(bookId)+'/reports');
     var list=$('reportList');
@@ -2759,7 +2765,7 @@ function editRecurring(i){
   openModal();
 }
 async function loadRecurring(){
-  var bookId=getBookId();if(!bookId)return;
+  var bookId=getBookId();if(!bookId){bookRequiredState(['recurringUpcoming','recurringList']);return;}
   try{
     var r=await api('/api/books/'+encodeURIComponent(bookId)+'/recurring-expenses');
     var items=(r.data||r)||[];
@@ -2824,7 +2830,7 @@ $('addRecurringBtn')&&$('addRecurringBtn').addEventListener('click',function(){
   sel.addEventListener('change',loadTax);}
 })();
 async function loadTax(){
-  var bookId=getBookId();if(!bookId)return;
+  var bookId=getBookId();if(!bookId){bookRequiredState(['taxDeductibles','taxQuarters']);return;}
   var year=parseInt(($('taxYearSelect')||{}).value)||new Date().getFullYear();
   $('taxYearLabel').textContent=year+' Tax Year';
   try{
@@ -2907,7 +2913,7 @@ $('taxSettingsBtn')&&$('taxSettingsBtn').addEventListener('click',async function
   var ps=$('pnlPeriod');if(ps)ps.addEventListener('change',loadPnl);
 })();
 async function loadPnl(){
-  var bookId=getBookId();if(!bookId)return;
+  var bookId=getBookId();if(!bookId){bookRequiredState(['pnlStats']);return;}
   var period=($('pnlPeriod')||{}).value||'monthly';
   var year=parseInt(($('pnlYear')||{}).value)||new Date().getFullYear();
   try{
