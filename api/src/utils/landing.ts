@@ -458,6 +458,11 @@ tr{cursor:pointer}
         <input class="form-input" type="email" id="newLinkedEmail" placeholder="another@email.com" style="flex:1">
         <button class="btn btn-sm btn-gold" id="addLinkedEmailBtn">Add</button>
       </div>
+      <div style="margin-top:20px;padding-top:16px;border-top:1px solid var(--cream-dark)">
+        <label style="display:block;font-size:.85rem;font-weight:600;color:var(--navy);margin-bottom:4px">Default book for emailed receipts</label>
+        <p style="font-size:.8rem;color:var(--text-light);margin:0 0 8px">New email receipts land here. Only open books can be chosen; if none is set, receipts go to your oldest open book.</p>
+        <select class="form-input" id="defaultEmailBook"></select>
+      </div>
     </div>
     <div class="card">
       <div class="card-header"><span class="card-title">Change Password</span></div>
@@ -1640,9 +1645,12 @@ function renderReceipts(recs){
     }
     var cells=[cbCell];
     if(allBooksMode)cells.push(el('td',{style:{color:'var(--text-light)',fontSize:'.85rem'}},r.book_name||'--'));
+    var isDup=r.notes&&r.notes.indexOf('Possible duplicate')===0;
+    var merchantCell=[document.createTextNode(r.merchant||'--')];
+    if(isDup)merchantCell.push(el('span',{title:r.notes,style:{marginLeft:'8px',display:'inline-block',padding:'1px 7px',borderRadius:'10px',background:'#fef3cd',color:'#856404',fontSize:'.68rem',fontWeight:'600',border:'1px solid rgba(133,100,4,.25)',verticalAlign:'middle',whiteSpace:'nowrap'}},'duplicate'));
     cells.push(
       el('td',null,fmtDate(r.date)),
-      el('td',{style:{fontWeight:'500'}},r.merchant||'--'),
+      el('td',{style:{fontWeight:'500'}},merchantCell),
       el('td',null,r.category||'--'),
       el('td',{style:{fontWeight:'600',fontVariantNumeric:'tabular-nums'}},fmt(r.amount)),
       el('td',null,[sourceBadge(r.source)]),
@@ -1736,6 +1744,12 @@ async function openReceipt(bookId,receiptId){
     renderReceiptDetail(selReceipt);
   }catch(e){$('detailContent').replaceChildren(el('p',{className:'loading'},e.message))}
 }
+function openEmailHtml(bookId,receiptId){
+  fetch('/api/books/'+encodeURIComponent(bookId)+'/receipts/'+encodeURIComponent(receiptId)+'/image',{headers:{'Authorization':'Bearer '+T}})
+  .then(function(res){if(!res.ok)throw new Error();return res.blob()})
+  .then(function(blob){window.open(URL.createObjectURL(blob),'_blank')})
+  .catch(function(){toast('Could not open email','error')});
+}
 function loadAttachment(viewer,bookId,receiptId,index,ctHint){
   viewer.replaceChildren(el('div',{className:'loading'},'Loading...'));
   var url=index>=0?'/api/books/'+encodeURIComponent(bookId)+'/receipts/'+encodeURIComponent(receiptId)+'/attachments/'+index:'/api/books/'+encodeURIComponent(bookId)+'/receipts/'+encodeURIComponent(receiptId)+'/image';
@@ -1767,7 +1781,10 @@ function renderReceiptDetail(r){
       var tabs=el('div',{style:{display:'flex',gap:'6px',marginBottom:'12px',flexWrap:'wrap'}});
       var viewer=el('div',{className:'img-viewer'});
       var defaultIdx=0;
+      // Default to a real document (PDF first, then image) rather than the
+      // email-HTML wrapper at index 0, which previews as a near-blank frame.
       for(var di=0;di<atts.length;di++){if(atts[di].content_type==='application/pdf'){defaultIdx=di;break}}
+      if(defaultIdx===0){for(var dk=0;dk<atts.length;dk++){if((atts[dk].content_type||'').indexOf('image/')===0){defaultIdx=dk;break}}}
       atts.forEach(function(att,i){
         var label=att.filename||('Attachment '+(i+1));
         if(att.content_type==='text/html')label='Email';
@@ -1779,8 +1796,17 @@ function renderReceiptDetail(r){
       });
       c.appendChild(tabs);c.appendChild(viewer);
       loadAttachment(viewer,r._bookId,r.id,defaultIdx,atts[defaultIdx].content_type);
+    } else if(atts.length===1&&atts[0].content_type==='text/html'){
+      // Email receipt with no image/PDF attached — the only document is the
+      // email HTML, which previews as a near-blank frame. Show an honest card
+      // with a button to open the full email instead of a confusing blank box.
+      c.appendChild(el('div',{className:'img-viewer',style:{textAlign:'center',padding:'28px 20px',color:'var(--text-light)'}},[
+        el('div',{style:{fontSize:'1.7rem',marginBottom:'6px'}},'✉️'),
+        el('div',{style:{fontSize:'.85rem',marginBottom:'14px'}},'Email receipt — no image or PDF was attached.'),
+        el('button',{className:'btn btn-sm btn-outline',style:{color:'var(--navy)',borderColor:'var(--cream-dark)'},onclick:function(){openEmailHtml(r._bookId,r.id)}},'Open Full Email')
+      ]));
     } else {
-      // Single attachment — show directly
+      // Single image/PDF attachment (or a non-email receipt) — show directly.
       var viewer=el('div',{className:'img-viewer'});
       loadAttachment(viewer,r._bookId,r.id,-1,null);
       c.appendChild(viewer);
@@ -2303,6 +2329,7 @@ async function loadSettings(){
     renderMfaSettings(U.mfa_enabled);
     loadPasskeys();
     renderLinkedEmails(U.linked_emails||[]);
+    renderDefaultEmailBook(U.default_book_id);
     // AI Provider
     var prov=U.ai_provider||'anthropic';
     var radios=document.querySelectorAll('input[name="aiProvider"]');
@@ -2378,6 +2405,24 @@ async function weavehubBuy(pack){
     var d=await api('/api/ai/checkout',{method:'POST',body:{pack:pack}});
     location.href=d.url;
   }catch(e){toast(e.message,'error')}
+}
+async function renderDefaultEmailBook(current){
+  var sel=$('defaultEmailBook');if(!sel)return;
+  try{
+    var res=await api('/api/books');
+    var owned=(res.owned||[]).filter(function(b){return (b.status||'open')==='open'});
+    sel.replaceChildren();
+    sel.appendChild(el('option',{value:''},'Oldest open book (automatic)'));
+    owned.forEach(function(b){
+      var o=el('option',{value:b.id},b.name);
+      if(b.id===current)o.selected=true;
+      sel.appendChild(o);
+    });
+    sel.onchange=async function(){
+      var v=sel.value;
+      try{await api('/api/auth/preferences',{method:'PUT',body:{default_book_id:v||null}});U.default_book_id=v||null;toast(v?'Default email book updated':'Email receipts will use your oldest open book')}catch(e){toast(e.message,'error')}
+    };
+  }catch(e){}
 }
 function renderLinkedEmails(emails){
   var c=$('linkedEmailsList');if(!c)return;c.replaceChildren();

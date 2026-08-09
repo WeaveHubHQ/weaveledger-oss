@@ -53,14 +53,29 @@ export async function handleInboundEmail(message: EmailMessage, env: Env, waitUn
     return;
   }
 
-  // Get the user's default book: the oldest *open* book. Closed books are
-  // finalized/read-only, so inbound receipts must never be written into one
-  // (the direct INSERT below bypasses the canAccessBook edit gate, so we filter
-  // on status here). If every owned book is closed, fall through and create a
-  // fresh open book rather than silently mutating a closed one.
-  let book = await env.DB.prepare(
-    "SELECT id FROM books WHERE owner_id = ? AND status = 'open' ORDER BY created_at ASC LIMIT 1"
-  ).bind(user.id).first<{ id: string }>();
+  // Pick the destination book, in priority order:
+  //   1. The user's chosen default book — but only if it's still owned AND open.
+  //   2. The oldest *open* book.
+  //   3. A freshly created open book (if every owned book is closed).
+  // Closed books are finalized/read-only, so inbound receipts must never land in
+  // one; the direct INSERT below bypasses the canAccessBook edit gate, so we
+  // enforce status = 'open' here rather than relying on that gate.
+  let book: { id: string } | null = null;
+
+  const pref = await env.DB.prepare(
+    'SELECT default_book_id FROM users WHERE id = ?'
+  ).bind(user.id).first<{ default_book_id: string | null }>();
+  if (pref?.default_book_id) {
+    book = await env.DB.prepare(
+      "SELECT id FROM books WHERE id = ? AND owner_id = ? AND status = 'open'"
+    ).bind(pref.default_book_id, user.id).first<{ id: string }>();
+  }
+
+  if (!book) {
+    book = await env.DB.prepare(
+      "SELECT id FROM books WHERE owner_id = ? AND status = 'open' ORDER BY created_at ASC LIMIT 1"
+    ).bind(user.id).first<{ id: string }>();
+  }
 
   if (!book) {
     const bookId = generateId('book');
