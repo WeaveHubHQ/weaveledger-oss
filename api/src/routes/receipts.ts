@@ -78,6 +78,70 @@ export async function listReceipts(request: Request, env: Env, userId: string, b
   });
 }
 
+// Aggregate receipts across every book the user can access (owned + shared).
+// Powers the "All Books" view. Mirrors listReceipts' filters/sort/pagination and
+// adds book_name to each row. Access is enforced by constraining to the user's
+// own accessible book ids — never a client-supplied book list.
+export async function listAllReceipts(request: Request, env: Env, userId: string): Promise<Response> {
+  const bookRows = await env.DB.prepare(
+    'SELECT id FROM books WHERE owner_id = ? UNION SELECT book_id AS id FROM book_shares WHERE user_id = ?'
+  ).bind(userId, userId).all<{ id: string }>();
+  const bookIds = (bookRows.results || []).map(r => r.id);
+  if (!bookIds.length) {
+    return success({ receipts: [], pagination: { page: 1, limit: 50, total: 0, pages: 0 } });
+  }
+
+  const url = new URL(request.url);
+  const filters: ReceiptFilters = Object.fromEntries(url.searchParams);
+  const placeholders = bookIds.map(() => '?').join(',');
+  let where = `WHERE r.book_id IN (${placeholders})`;
+  const params: (string | number)[] = [...bookIds];
+
+  if (filters.category) { where += ' AND r.category = ?'; params.push(filters.category); }
+  if (filters.date_from) { where += ' AND r.date >= ?'; params.push(filters.date_from); }
+  if (filters.date_to) { where += ' AND r.date <= ?'; params.push(filters.date_to); }
+  if (filters.merchant) { where += ' AND r.merchant LIKE ?'; params.push(`%${filters.merchant}%`); }
+  if (filters.min_amount) { const v = parseFloat(filters.min_amount); if (!isNaN(v)) { where += ' AND r.amount >= ?'; params.push(v); } }
+  if (filters.max_amount) { const v = parseFloat(filters.max_amount); if (!isNaN(v)) { where += ' AND r.amount <= ?'; params.push(v); } }
+  if (filters.status) { where += ' AND r.status = ?'; params.push(filters.status); }
+  if (filters.source) { where += ' AND r.source = ?'; params.push(filters.source); }
+  if (filters.search) {
+    where += ' AND (r.merchant LIKE ? OR r.description LIKE ? OR r.notes LIKE ?)';
+    const term = `%${filters.search}%`;
+    params.push(term, term, term);
+  }
+
+  const countResult = await env.DB.prepare(
+    `SELECT COUNT(*) as total FROM receipts r ${where}`
+  ).bind(...params).first<{ total: number }>();
+
+  const sortField = filters.sort || 'date';
+  const sortOrder = filters.order === 'asc' ? 'ASC' : 'DESC';
+  // SECURITY: allowlist prevents SQL injection — do not add user-controlled values
+  const allowedSorts = ['date', 'amount', 'merchant', 'category', 'created_at'];
+  const orderCol = allowedSorts.includes(sortField) ? sortField : 'date';
+
+  const limit = Math.min(parseInt(filters.limit || '50') || 50, 100);
+  const page = Math.max(parseInt(filters.page || '1') || 1, 1);
+  const offset = (page - 1) * limit;
+  const rowParams = [...params, limit, offset];
+
+  const results = await env.DB.prepare(
+    `SELECT r.*, b.name AS book_name FROM receipts r JOIN books b ON b.id = r.book_id
+     ${where} ORDER BY r.${orderCol} ${sortOrder} LIMIT ? OFFSET ?`
+  ).bind(...rowParams).all();
+
+  return success({
+    receipts: results.results,
+    pagination: {
+      page,
+      limit,
+      total: countResult?.total || 0,
+      pages: Math.ceil((countResult?.total || 0) / limit),
+    },
+  });
+}
+
 export async function createReceipt(request: Request, env: Env, userId: string, bookId: string): Promise<Response> {
   if (!await canAccessBook(env.DB, userId, bookId, 'member')) {
     return error('Access denied', 403);

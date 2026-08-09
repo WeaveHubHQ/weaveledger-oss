@@ -377,7 +377,7 @@ tr{cursor:pointer}
     <button class="btn btn-outline btn-sm" id="clearSelBtn" style="color:var(--navy);border-color:var(--cream-dark)">Clear</button>
   </div>
   <div class="card" style="padding:0;overflow:hidden">
-    <div class="table-wrap"><table><thead><tr><th style="width:34px"></th><th>Date</th><th>Merchant</th><th>Category</th><th>Amount</th><th>Source</th><th>Status</th></tr></thead><tbody id="receiptsTable"></tbody></table></div>
+    <div class="table-wrap"><table><thead><tr><th style="width:34px"></th><th class="bookcol" style="display:none">Book</th><th>Date</th><th>Merchant</th><th>Category</th><th>Amount</th><th>Source</th><th>Status</th></tr></thead><tbody id="receiptsTable"></tbody></table></div>
     <div class="pagination" id="receiptsPagination"></div>
   </div>
 </div>
@@ -1313,6 +1313,10 @@ function populateBookSelects(){
     if(v)sel.value=v;
     if(sel.id==='uploadBook'&&books.length)sel.value=books[0].id;
   });
+  // Restore the user's last-used book on the Expenses filter (only when nothing
+  // is selected yet, i.e. initial load) so creating a new book doesn't hijack it.
+  var rf=$('receiptBookFilter');
+  if(rf&&rf.value===''){var saved=localStorage.getItem('wl_book');if(saved&&books.find(function(b){return b.id===saved}))rf.value=saved;}
   CATS.forEach(function(c){
     [$('categoryFilter'),$('exportCategory')].forEach(function(sel){
       if(!sel||sel.querySelector('option[value="'+c+'"]'))return;
@@ -1570,11 +1574,15 @@ function renderShares(shares,invitations,bookId){
 
 // RECEIPTS
 var receiptFilters={};
+var allBooksMode=false;
+function setBookColumn(show){var h=document.querySelector('#pg-expenses .bookcol');if(h)h.style.display=show?'':'none';}
 async function loadReceipts(page){
   curPage=page||1;
   var bookId=$('receiptBookFilter').value;
-  if(!bookId&&books.length){bookId=books[0].id;$('receiptBookFilter').value=bookId}
-  if(!bookId){$('receiptsTable').replaceChildren(el('tr',null,[el('td',{colspan:'7',className:'empty'},'Select or create a book first')]));return}
+  allBooksMode=(!bookId && books.length>0);
+  if(!bookId && !books.length){setBookColumn(false);$('receiptsTable').replaceChildren(el('tr',null,[el('td',{colspan:'7',className:'empty'},'Create a book to get started.')]));return}
+  try{localStorage.setItem('wl_book',bookId);}catch(e){}
+  setBookColumn(allBooksMode);
   var pageSize=parseInt(localStorage.getItem('wl_pageSize'))||10;
   var params='?page='+curPage+'&limit='+pageSize;
   var search=$('searchFilter').value.trim();if(search)params+='&search='+encodeURIComponent(search);
@@ -1583,13 +1591,14 @@ async function loadReceipts(page){
   var df=$('dateFromFilter').value;if(df)params+='&date_from='+df;
   var dt=$('dateToFilter').value;if(dt)params+='&date_to='+dt;
   var book=books.find(function(b){return b.id===bookId});
-  $('receiptsSubtitle').textContent=book?book.name+' receipts':'All receipts';
-  resetSelectionForBook(bookId);
+  $('receiptsSubtitle').textContent=allBooksMode?'All books · receipts':(book?book.name+' receipts':'receipts');
+  resetSelectionForBook(bookId||'all');
   try{
-    var d=await api('/api/books/'+encodeURIComponent(bookId)+'/receipts'+params);
+    var url=allBooksMode?('/api/receipts'+params):('/api/books/'+encodeURIComponent(bookId)+'/receipts'+params);
+    var d=await api(url);
     receipts=d.receipts||d||[];var pg=d.pagination;totalPages=pg?pg.pages:1;
     renderReceipts(receipts);renderPagination(pg);
-  }catch(e){$('receiptsTable').replaceChildren(el('tr',null,[el('td',{colspan:'7',className:'loading'},e.message)]))}
+  }catch(e){$('receiptsTable').replaceChildren(el('tr',null,[el('td',{colspan:allBooksMode?'8':'7',className:'loading'},e.message)]))}
 }
 ['receiptBookFilter','categoryFilter','statusFilter'].forEach(function(id){$(id).addEventListener('change',function(){loadReceipts(1)})});
 $('searchFilter').addEventListener('input',debounce(function(){loadReceipts(1)},400));
@@ -1612,7 +1621,7 @@ function toggleReceiptSelection(id,checked){
 }
 function renderReceipts(recs){
   var t=$('receiptsTable');t.replaceChildren();
-  if(!recs.length){t.appendChild(el('tr',null,[el('td',{colspan:'7',style:{textAlign:'center',padding:'40px',color:'var(--text-light)'}},'No receipts found')]));return}
+  if(!recs.length){t.appendChild(el('tr',null,[el('td',{colspan:allBooksMode?'8':'7',style:{textAlign:'center',padding:'40px',color:'var(--text-light)'}},'No receipts found')]));return}
   recs.forEach(function(r){
     var cbCell;
     if(r.status==='completed'){
@@ -1624,15 +1633,17 @@ function renderReceipts(recs){
     }else{
       cbCell=el('td',null,'');
     }
-    t.appendChild(el('tr',{onclick:function(){openReceipt(r.book_id,r.id)}},[
-      cbCell,
+    var cells=[cbCell];
+    if(allBooksMode)cells.push(el('td',{style:{color:'var(--text-light)',fontSize:'.85rem'}},r.book_name||'--'));
+    cells.push(
       el('td',null,fmtDate(r.date)),
       el('td',{style:{fontWeight:'500'}},r.merchant||'--'),
       el('td',null,r.category||'--'),
       el('td',{style:{fontWeight:'600',fontVariantNumeric:'tabular-nums'}},fmt(r.amount)),
       el('td',null,[sourceBadge(r.source)]),
       el('td',null,[statusBadge(r.status)])
-    ]));
+    );
+    t.appendChild(el('tr',{onclick:function(){openReceipt(r.book_id,r.id)}},cells));
   });
 }
 function renderPagination(pg){

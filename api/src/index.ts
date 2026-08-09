@@ -5,7 +5,7 @@ import { register, registrationStatus, login, changePassword, getProfile, update
 import { getAiUsage, createAiCheckout, createAiKey } from './routes/ai';
 import { passkeyRegisterOptions, passkeyRegisterVerify, passkeyLoginOptions, passkeyLoginVerify, listPasskeys, renamePasskey, deletePasskey } from './routes/passkeys';
 import { listBooks, createBook, getBook, updateBook, deleteBook, shareBook, revokeShare, listInvitations, revokeInvitation } from './routes/books';
-import { listReceipts, createReceipt, getReceipt, updateReceipt, deleteReceipt, uploadReceiptImage, getReceiptImage, getReceiptAttachment, retryReceipt, getBookSummary, cleanupStuckReceipts } from './routes/receipts';
+import { listReceipts, listAllReceipts, createReceipt, getReceipt, updateReceipt, deleteReceipt, uploadReceiptImage, getReceiptImage, getReceiptAttachment, retryReceipt, getBookSummary, cleanupStuckReceipts } from './routes/receipts';
 import { exportBook } from './services/export';
 import { listIntegrations, upsertIntegration, deleteIntegration, syncIntegration, syncAllIntegrations, listIncomeTransactions, getIncomeSummary, listPayouts, markPayoutReceived, getIncomeDashboard } from './routes/income';
 import { triggerReconcile, backfillUsd, backfillFees, listCronRuns } from './routes/admin';
@@ -348,6 +348,9 @@ const worker = {
       }
 
       // Receipt routes
+      if (path === '/api/receipts' && method === 'GET') {
+        return addCors(await listAllReceipts(request, env, userId));
+      }
       const receiptsMatch = path.match(/^\/api\/books\/([^/]+)\/receipts$/);
       if (receiptsMatch) {
         const bookId = receiptsMatch[1];
