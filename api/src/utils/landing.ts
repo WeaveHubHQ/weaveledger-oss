@@ -2770,6 +2770,18 @@ async function deleteReport(r){
     image appendix. The browser's print dialog does "Save as PDF", which is
     the submittable deliverable (mirrors the iOS PDF export, incl. 40-image
     appendix cap). */
+// Prepare stored email HTML for inline embedding in the print appendix. Drops
+// scripts, <style>/<link> (so the email's global CSS can't clobber the report
+// layout) and the html/head/body wrappers. Receipt emails are inline-styled, so
+// the content still renders faithfully.
+function sanitizeEmailForPrint(html){
+  var s=String(html||'');
+  s=s.replace(/<script[\s\S]*?<\/script>/gi,'');
+  s=s.replace(/<style[\s\S]*?<\/style>/gi,'');
+  s=s.replace(/<link[^>]*>/gi,'');
+  s=s.replace(/<\/?(?:html|head|body)[^>]*>/gi,'');
+  return s;
+}
 async function openReportPrintView(r){
   var bookId=getBookId();if(!bookId)return;
   var w=window.open('','_blank');
@@ -2779,14 +2791,32 @@ async function openReportPrintView(r){
   try{
     var receipts=r.receipts||[];
     var maxImages=40;
-    var withImages=receipts.filter(function(rc){return rc.image_key});
+    // Only receipts whose primary document is an actual image belong in the
+    // image appendix. Email-only receipts (image_key points at the stored
+    // email HTML) and PDF-primary receipts would otherwise render as a broken
+    // <img>. We can't know the type without the response, so we fetch up to the
+    // cap and keep only image/* responses.
+    var withImages=receipts.filter(function(rc){return rc.image_key&&!/_email\.html$/.test(rc.image_key)});
     var omitted=Math.max(0,withImages.length-maxImages);
     var imgs={};
     await Promise.all(withImages.slice(0,maxImages).map(async function(rc){
       try{
         var resp=await fetch('/api/books/'+encodeURIComponent(bookId)+'/receipts/'+encodeURIComponent(rc.id)+'/image',{headers:{'Authorization':'Bearer '+T}});
-        if(resp.ok)imgs[rc.id]=URL.createObjectURL(await resp.blob());
-      }catch(e){/* image missing: row still prints */}
+        if(resp.ok&&(resp.headers.get('content-type')||'').indexOf('image/')===0)imgs[rc.id]=URL.createObjectURL(await resp.blob());
+      }catch(e){/* image missing or not an image: row still prints in the table */}
+    }));
+    // Emailed receipts (no photo/PDF attached): embed the stored email HTML as
+    // its own block in the appendix so a forwarded receipt becomes a real
+    // document in the saved PDF, not just a table row.
+    var emailReceipts=receipts.filter(function(rc){return rc.image_key&&/_email\.html$/.test(rc.image_key)});
+    var maxEmails=20;
+    var emailOmitted=Math.max(0,emailReceipts.length-maxEmails);
+    var emailDocs={};
+    await Promise.all(emailReceipts.slice(0,maxEmails).map(async function(rc){
+      try{
+        var resp=await fetch('/api/books/'+encodeURIComponent(bookId)+'/receipts/'+encodeURIComponent(rc.id)+'/image',{headers:{'Authorization':'Bearer '+T}});
+        if(resp.ok)emailDocs[rc.id]=sanitizeEmailForPrint(await resp.text());
+      }catch(e){/* email missing: row still prints in the table */}
     }));
     var html='<style>'
       +'body{font-family:Georgia,serif;color:#0A1628;margin:40px;max-width:720px}'
@@ -2802,6 +2832,11 @@ async function openReportPrintView(r){
       +'figure{margin:0 0 24px;page-break-inside:avoid}'
       +'figure img{max-width:100%;max-height:640px;border:1px solid #ccc}'
       +'figcaption{font-size:.8rem;color:#555;margin-top:4px}'
+      +'.email-doc{border:1px solid #ccc;padding:16px;margin:0 0 24px}'
+      +'.email-doc .email-cap{font-size:.8rem;color:#555;margin-bottom:10px;font-weight:bold;border-bottom:1px solid #eee;padding-bottom:6px}'
+      +'.email-doc .email-body{font-size:.85rem;line-height:1.4;overflow-wrap:break-word}'
+      +'.email-doc .email-body img{max-width:100%}'
+      +'.email-doc .email-body table{max-width:100%}'
       +'.note{font-size:.8rem;color:#555}'
       +'@media print{body{margin:12mm}}'
       +'</style>';
@@ -2814,13 +2849,19 @@ async function openReportPrintView(r){
     html+='<tr class="total"><td colspan="3">Total</td><td class="amt">'+reportTotalsText(r.totals)+'</td></tr>';
     html+='</tbody></table>';
     var shown=withImages.slice(0,maxImages).filter(function(rc){return imgs[rc.id]});
-    if(shown.length){
-      html+='<div class="appendix"><h2>Receipts ('+shown.length+')</h2>';
+    var shownEmails=emailReceipts.slice(0,maxEmails).filter(function(rc){return emailDocs[rc.id]});
+    if(shown.length||shownEmails.length){
+      html+='<div class="appendix"><h2>Receipts ('+(shown.length+shownEmails.length)+')</h2>';
       shown.forEach(function(rc){
         var cap=[rc.merchant||'Unknown',rc.date||'',fmtCur(rc.amount,rc.currency)].filter(Boolean).join(' — ');
         html+='<figure><img src="'+imgs[rc.id]+'" alt="'+escH(cap)+'"><figcaption>'+escH(cap)+'</figcaption></figure>';
       });
+      shownEmails.forEach(function(rc){
+        var cap=[rc.merchant||'Unknown',rc.date||'',fmtCur(rc.amount,rc.currency)].filter(Boolean).join(' — ');
+        html+='<div class="email-doc"><div class="email-cap">'+escH(cap)+' &middot; emailed receipt</div><div class="email-body">'+emailDocs[rc.id]+'</div></div>';
+      });
       if(omitted>0)html+='<p class="note">'+omitted+' additional receipt image'+(omitted===1?'':'s')+' omitted (appendix capped at '+maxImages+').</p>';
+      if(emailOmitted>0)html+='<p class="note">'+emailOmitted+' additional emailed receipt'+(emailOmitted===1?'':'s')+' omitted (capped at '+maxEmails+').</p>';
       html+='</div>';
     }
     w.document.body.innerHTML=html;
