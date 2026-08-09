@@ -247,7 +247,7 @@ tr{cursor:pointer}
       </div>
       <div class="form-group">
         <label for="loginEmail">Email Address</label>
-        <input class="form-input" type="email" id="loginEmail" required autocomplete="email" placeholder="you@company.com">
+        <input class="form-input" type="email" id="loginEmail" required autocomplete="email webauthn" placeholder="you@company.com">
       </div>
       <div class="form-group">
         <label for="loginPass">Password</label>
@@ -978,33 +978,77 @@ function showMfaPrompt(){
 function bufToB64url(buf){var bytes=new Uint8Array(buf),bin='';for(var i=0;i<bytes.length;i++)bin+=String.fromCharCode(bytes[i]);return btoa(bin).replace(/\\+/g,'-').replace(/\\//g,'_').replace(/=+$/,'')}
 function b64urlToBuf(s){var b=s.replace(/-/g,'+').replace(/_/g,'/');while(b.length%4)b+='=';var bin=atob(b),bytes=new Uint8Array(bin.length);for(var i=0;i<bin.length;i++)bytes[i]=bin.charCodeAt(i);return bytes.buffer}
 if(window.PublicKeyCredential)$('passkeyRow').style.display='';
+// Send an assertion to the server and start the session. Shared by the explicit
+// button and the conditional-UI (autofill) path.
+async function completePasskeyLogin(cred,challengeId){
+  var vr=await fetch('/api/auth/passkeys/login/verify',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({
+    challenge_id:challengeId,
+    credential:{id:cred.id,response:{
+      clientDataJSON:bufToB64url(cred.response.clientDataJSON),
+      authenticatorData:bufToB64url(cred.response.authenticatorData),
+      signature:bufToB64url(cred.response.signature),
+      userHandle:cred.response.userHandle?bufToB64url(cred.response.userHandle):null
+    }}
+  })});
+  var v=await vr.json();if(!vr.ok)throw new Error(v.error||'Passkey sign-in failed');
+  T=v.token;E=v.user&&v.user.email||'';
+  localStorage.setItem('wl_token',T);localStorage.setItem('wl_email',E);
+  showApp();
+}
+async function passkeyOptions(){
+  var r=await fetch('/api/auth/passkeys/login/options',{method:'POST'});
+  var o=await r.json();if(!r.ok)throw new Error(o.error||'Failed to start passkey sign-in');
+  return o.data;
+}
+// Explicit "Sign in with a passkey" button (modal mediation).
 $('passkeyLoginBtn').addEventListener('click',async function(){
   var btn=this,err=$('loginError');err.style.display='none';btn.disabled=true;btn.textContent='Waiting for your passkey...';
   try{
-    var r=await fetch('/api/auth/passkeys/login/options',{method:'POST'});
-    var o=await r.json();if(!r.ok)throw new Error(o.error||'Failed to start passkey sign-in');
-    var opts=o.data.publicKey;
+    var d=await passkeyOptions();var opts=d.publicKey;
     var cred=await navigator.credentials.get({publicKey:{
       challenge:b64urlToBuf(opts.challenge),rpId:opts.rpId,timeout:opts.timeout,
       userVerification:opts.userVerification,allowCredentials:[]
     }});
-    var vr=await fetch('/api/auth/passkeys/login/verify',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({
-      challenge_id:o.data.challenge_id,
-      credential:{id:cred.id,response:{
-        clientDataJSON:bufToB64url(cred.response.clientDataJSON),
-        authenticatorData:bufToB64url(cred.response.authenticatorData),
-        signature:bufToB64url(cred.response.signature),
-        userHandle:cred.response.userHandle?bufToB64url(cred.response.userHandle):null
-      }}
-    })});
-    var v=await vr.json();if(!vr.ok)throw new Error(v.error||'Passkey sign-in failed');
-    T=v.token;E=v.user&&v.user.email||'';
-    localStorage.setItem('wl_token',T);localStorage.setItem('wl_email',E);
-    showApp();
+    await completePasskeyLogin(cred,d.challenge_id);
   }catch(e){
     if(e.name!=='NotAllowedError'&&e.name!=='AbortError'){err.textContent=e.message;err.style.display='block'}
   }finally{btn.disabled=false;btn.innerHTML='\\uD83D\\uDD11 Sign in with a passkey'}
 });
+// Conditional UI: if the browser + a passkey provider (1Password, iCloud, etc.)
+// support autofill, offer saved passkeys right in the email field — no button
+// press needed. The request stays pending until the user picks one or submits
+// the password form normally; NotAllowedError/AbortError just means they went
+// another way, so it is swallowed silently.
+(async function initConditionalPasskey(){
+  try{
+    if(!window.PublicKeyCredential||!PublicKeyCredential.isConditionalMediationAvailable)return;
+    if(!(await PublicKeyCredential.isConditionalMediationAvailable()))return;
+    var d=await passkeyOptions();var opts=d.publicKey;
+    var cred=await navigator.credentials.get({
+      mediation:'conditional',
+      publicKey:{challenge:b64urlToBuf(opts.challenge),rpId:opts.rpId,timeout:opts.timeout,userVerification:opts.userVerification,allowCredentials:[]}
+    });
+    if(cred)await completePasskeyLogin(cred,d.challenge_id);
+  }catch(e){ /* user chose password/another method, or no passkey — ignore */ }
+})();
+// A friendly default like "Chrome on macOS" so a new passkey is named without
+// interrupting the create ceremony with a browser prompt. Renameable in the list.
+function defaultPasskeyName(){
+  var ua=navigator.userAgent||'';
+  var os='this device';
+  if(/iPhone|iPad|iPod/.test(ua))os='iPhone/iPad';
+  else if(/Macintosh|Mac OS X/.test(ua))os='macOS';
+  else if(/Windows/.test(ua))os='Windows';
+  else if(/Android/.test(ua))os='Android';
+  else if(/Linux/.test(ua))os='Linux';
+  var br='Browser';
+  if(/Edg\\//.test(ua))br='Edge';
+  else if(/OPR\\//.test(ua))br='Opera';
+  else if(/Chrome\\//.test(ua))br='Chrome';
+  else if(/Firefox\\//.test(ua))br='Firefox';
+  else if(/Safari\\//.test(ua))br='Safari';
+  return br+' on '+os;
+}
 async function loadPasskeys(){
   var c=$('passkeysList');if(!c)return;
   if(!window.PublicKeyCredential){c.replaceChildren(el('p',{style:{fontSize:'.85rem',color:'var(--text-light)',fontStyle:'italic'}},'This browser does not support passkeys.'));$('addPasskeyBtn').style.display='none';return}
@@ -1013,15 +1057,31 @@ async function loadPasskeys(){
     c.replaceChildren();
     if(!list.length){c.appendChild(el('p',{style:{fontSize:'.85rem',color:'var(--text-light)',padding:'4px 0',fontStyle:'italic'}},'No passkeys yet.'));return}
     list.forEach(function(pk){
+      var nameSpan=el('span',{className:'share-name'},pk.nickname||'Passkey');
+      var info=el('div',{className:'share-info'},[
+        nameSpan,
+        el('span',{className:'share-email'},'Added '+fmtDate(pk.created_at)+(pk.last_used_at?' \\u00b7 Last used '+fmtDate(pk.last_used_at):' \\u00b7 Never used'))
+      ]);
+      function startRename(){
+        var input=el('input',{className:'form-input',value:pk.nickname||'',style:{fontSize:'.85rem',padding:'4px 8px'}});
+        async function commit(){
+          var name=input.value.trim();if(!name||name===pk.nickname){loadPasskeys();return}
+          try{await api('/api/auth/passkeys/'+pk.id,{method:'PATCH',body:{nickname:name}});toast('Passkey renamed');loadPasskeys()}
+          catch(e){toast(e.message,'error');loadPasskeys()}
+        }
+        input.addEventListener('keydown',function(ev){if(ev.key==='Enter')commit();else if(ev.key==='Escape')loadPasskeys()});
+        input.addEventListener('blur',commit);
+        info.replaceChild(input,nameSpan);input.focus();input.select();
+      }
       c.appendChild(el('div',{className:'share-item'},[
-        el('div',{className:'share-info'},[
-          el('span',{className:'share-name'},pk.nickname||'Passkey'),
-          el('span',{className:'share-email'},'Added '+fmtDate(pk.created_at)+(pk.last_used_at?' \\u00b7 Last used '+fmtDate(pk.last_used_at):' \\u00b7 Never used'))
-        ]),
-        el('button',{className:'btn btn-sm btn-danger',style:{fontSize:'.7rem',padding:'2px 8px'},onclick:async function(){
-          if(!confirm('Remove this passkey? You will no longer be able to sign in with it.'))return;
-          try{await api('/api/auth/passkeys/'+pk.id,{method:'DELETE'});toast('Passkey removed');loadPasskeys()}catch(e){toast(e.message,'error')}
-        }},'Remove')
+        info,
+        el('div',{style:{display:'flex',gap:'6px'}},[
+          el('button',{className:'btn btn-sm',style:{fontSize:'.7rem',padding:'2px 8px'},onclick:startRename},'Rename'),
+          el('button',{className:'btn btn-sm btn-danger',style:{fontSize:'.7rem',padding:'2px 8px'},onclick:async function(){
+            if(!confirm('Remove this passkey? You will no longer be able to sign in with it.'))return;
+            try{await api('/api/auth/passkeys/'+pk.id,{method:'DELETE'});toast('Passkey removed');loadPasskeys()}catch(e){toast(e.message,'error')}
+          }},'Remove')
+        ])
       ]));
     });
   }catch(e){c.replaceChildren(el('p',{style:{fontSize:'.85rem',color:'var(--red)'}},e.message))}
@@ -1041,10 +1101,9 @@ $('addPasskeyBtn').addEventListener('click',async function(){
       authenticatorSelection:opts.authenticatorSelection,
       attestation:opts.attestation
     }});
-    var nickname=prompt('Name this passkey (e.g. "MacBook Touch ID"):')||'';
     await api('/api/auth/passkeys/register/verify',{method:'POST',body:{
       challenge_id:o.challenge_id,
-      nickname:nickname,
+      nickname:defaultPasskeyName(),
       credential:{id:cred.id,response:{
         clientDataJSON:bufToB64url(cred.response.clientDataJSON),
         attestationObject:bufToB64url(cred.response.attestationObject),
