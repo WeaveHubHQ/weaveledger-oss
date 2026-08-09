@@ -53,9 +53,13 @@ export async function handleInboundEmail(message: EmailMessage, env: Env, waitUn
     return;
   }
 
-  // Get the user's default book (first owned book, or create one)
+  // Get the user's default book: the oldest *open* book. Closed books are
+  // finalized/read-only, so inbound receipts must never be written into one
+  // (the direct INSERT below bypasses the canAccessBook edit gate, so we filter
+  // on status here). If every owned book is closed, fall through and create a
+  // fresh open book rather than silently mutating a closed one.
   let book = await env.DB.prepare(
-    "SELECT id FROM books WHERE owner_id = ? ORDER BY created_at ASC LIMIT 1"
+    "SELECT id FROM books WHERE owner_id = ? AND status = 'open' ORDER BY created_at ASC LIMIT 1"
   ).bind(user.id).first<{ id: string }>();
 
   if (!book) {
