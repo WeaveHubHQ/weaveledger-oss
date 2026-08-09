@@ -159,8 +159,13 @@ export type RequiredPermission = 'reader' | 'member' | 'admin';
 
 export async function canAccessBook(db: D1Database, userId: string, bookId: string, requireEdit: boolean | RequiredPermission = false): Promise<boolean> {
   // Check if user owns the book — owners always have full access
-  const book = await db.prepare('SELECT owner_id FROM books WHERE id = ?').bind(bookId).first<{ owner_id: string }>();
+  const book = await db.prepare('SELECT owner_id, status FROM books WHERE id = ?').bind(bookId).first<{ owner_id: string; status?: string }>();
   if (!book) return false;
+  // A closed book is read-only for EVERYONE (owner included). Reads still pass;
+  // any edit (requireEdit truthy / non-reader) is refused. Reopening a book goes
+  // through the owner-only setBookStatus path, which bypasses this gate.
+  const editing = requireEdit === true || (typeof requireEdit === 'string' && requireEdit !== 'reader');
+  if (editing && book.status === 'closed') return false;
   if (book.owner_id === userId) return true;
 
   // Check if user has a share

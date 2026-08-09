@@ -1309,7 +1309,7 @@ function populateBookSelects(){
     if(!sel)return;var v=sel.value;
     while(sel.firstChild)sel.removeChild(sel.firstChild);
     if(sel.id!=='uploadBook'){sel.appendChild(el('option',{value:''},'All Books'))}
-    books.forEach(function(b){sel.appendChild(el('option',{value:b.id},b.name))});
+    books.forEach(function(b){sel.appendChild(el('option',{value:b.id},b.name+(b.status==='closed'?' (closed)':'')))});
     if(v)sel.value=v;
     if(sel.id==='uploadBook'&&books.length)sel.value=books[0].id;
   });
@@ -1466,7 +1466,7 @@ async function loadBooks(){
     var card=el('div',{className:'card',style:{cursor:'pointer'},onclick:function(){showBookDetail(b)}},[
       el('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'flex-start'}},[
         el('div',null,[
-          el('h3',{style:{fontFamily:'var(--font-display)',fontSize:'1.15rem',color:'var(--navy)',marginBottom:'4px'}},b.name),
+          el('h3',{style:{fontFamily:'var(--font-display)',fontSize:'1.15rem',color:'var(--navy)',marginBottom:'4px'}},[document.createTextNode(b.name),b.status==='closed'?el('span',{style:{marginLeft:'8px',fontFamily:'var(--font-body)',fontSize:'.62rem',fontWeight:'700',letterSpacing:'.06em',textTransform:'uppercase',color:'var(--gold-dim)',background:'rgba(138,114,52,.12)',padding:'2px 7px',borderRadius:'10px',verticalAlign:'middle'}},'Closed'):null]),
           el('p',{style:{fontSize:'.82rem',color:'var(--text-light)'}},b.description||'No description')
         ]),
         el('div',{style:{textAlign:'right'}},[
@@ -1479,6 +1479,7 @@ async function loadBooks(){
         el('div',{style:{display:'flex',gap:'6px'}},[
           b.permission?null:el('button',{className:'btn btn-sm btn-outline',style:{color:'var(--gold-dim)',borderColor:'var(--cream-dark)',fontSize:'.75rem',padding:'4px 10px'},onclick:function(e){e.stopPropagation();showShareModal(b.id)}},'Share'),
           el('button',{className:'btn btn-sm btn-outline',style:{color:'var(--navy)',borderColor:'var(--cream-dark)',fontSize:'.75rem',padding:'4px 10px'},onclick:function(e){e.stopPropagation();editBook(b)}},'Edit'),
+          b.permission?null:el('button',{className:'btn btn-sm btn-outline',style:{color:'var(--navy)',borderColor:'var(--cream-dark)',fontSize:'.75rem',padding:'4px 10px'},onclick:function(e){e.stopPropagation();setBookClosed(b,b.status!=='closed')}},b.status==='closed'?'Reopen':'Close'),
           b.permission?null:el('button',{className:'btn btn-sm btn-danger',style:{fontSize:'.75rem',padding:'4px 10px'},onclick:function(e){e.stopPropagation();deleteBook(b)}},'Delete')
         ])
       ])
@@ -1511,6 +1512,10 @@ function showBookModal(book){
   openModal();
 }
 function editBook(b){showBookModal(b)}
+async function setBookClosed(b,close){
+  if(close&&!confirm('Close "'+b.name+'"? It becomes read-only — no new receipts or edits until you reopen it.'))return;
+  try{await api('/api/books/'+b.id+'/status',{method:'POST',body:{status:close?'closed':'open'}});toast(close?'Book closed':'Book reopened');loadBooks();fetchBooks()}catch(e){toast(e.message,'error')}
+}
 async function deleteBook(b){
   if(!confirm('Delete "'+b.name+'"? This will delete all receipts in this book.'))return;
   try{await api('/api/books/'+b.id,{method:'DELETE'});toast('Book deleted');loadBooks();fetchBooks()}catch(e){toast(e.message,'error')}
@@ -2778,9 +2783,13 @@ async function downloadReportCsv(r){
 }
 $('refreshReports')&&$('refreshReports').addEventListener('click',function(){var b=this;b.classList.add('spinning');loadReports().finally(function(){b.classList.remove('spinning')})});
 $('addReportBtn')&&$('addReportBtn').addEventListener('click',function(){
-  var bookId=getBookId();if(!bookId){toast('No book selected','error');return}
+  var openBooks=books.filter(function(b){return b.status!=='closed'});
+  if(!openBooks.length){toast('Create an open book first','error');return}
+  var bookSel=el('select',{className:'form-select',id:'reportBook'});
+  openBooks.forEach(function(b){var o=el('option',{value:b.id},b.name);if(b.id===getBookId())o.selected=true;bookSel.appendChild(o)});
   $('modalTitle').textContent='New Report';
   $('modalBody').replaceChildren(
+    el('div',{className:'form-group'},[el('label',{for:'reportBook'},'Book'),bookSel]),
     formGroup('Title','text','reportTitle','','Denver trip - March'),
     formGroup('Notes (optional)','text','reportNotes','','')
   );
@@ -2788,6 +2797,7 @@ $('addReportBtn')&&$('addReportBtn').addEventListener('click',function(){
     el('button',{className:'btn btn-outline',style:{color:'var(--navy)',borderColor:'var(--cream-dark)'},onclick:closeModal},'Cancel'),
     el('button',{className:'btn btn-gold',onclick:async function(){
       var t=$('reportTitle').value.trim();if(!t){toast('Enter a title','error');return}
+      var bookId=$('reportBook').value;if(!bookId){toast('Select a book','error');return}
       try{await api('/api/books/'+encodeURIComponent(bookId)+'/reports',{method:'POST',body:{title:t,notes:$('reportNotes').value||null}});toast('Report created');closeModal();loadReports();}catch(e){toast(e.message,'error')}
     }},'Create')
   );openModal();
