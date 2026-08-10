@@ -704,6 +704,16 @@ const worker = {
             console.error('[cron daily] finance-reports failed:', e);
           }
         }
+        // Extraction failures are invisible until someone scrolls the Expenses
+        // list — a retired model id once broke every receipt for six weeks
+        // unnoticed. Report the last 24h so it surfaces in a day, not a quarter.
+        try {
+          const { alertOnRecentFailures } = await import('./services/failure-alert');
+          const res = await alertOnRecentFailures(env);
+          if (res.failures) console.error(`[cron daily] receipt failures in last 24h: ${res.failures} (notified ${res.notified})`);
+        } catch (e) {
+          console.error('[cron daily] failure-alert failed:', e);
+        }
         // LED-39: Google Play earnings reports (real per-transaction fees).
         const { syncGooglePlayEarnings } = await import('./services/integrations/google-play-earnings');
         const gp = await env.DB.prepare(
