@@ -5,7 +5,7 @@ import { register, registrationStatus, login, changePassword, getProfile, update
 import { getAiUsage, createAiCheckout, createAiKey } from './routes/ai';
 import { passkeyRegisterOptions, passkeyRegisterVerify, passkeyLoginOptions, passkeyLoginVerify, listPasskeys, renamePasskey, deletePasskey } from './routes/passkeys';
 import { listBooks, createBook, getBook, updateBook, setBookStatus, deleteBook, shareBook, revokeShare, listInvitations, revokeInvitation } from './routes/books';
-import { listReceipts, listAllReceipts, createReceipt, getReceipt, updateReceipt, deleteReceipt, uploadReceiptImage, getReceiptImage, getReceiptAttachment, retryReceipt, getBookSummary, cleanupStuckReceipts } from './routes/receipts';
+import { listReceipts, listAllReceipts, createReceipt, getReceipt, updateReceipt, deleteReceipt, uploadReceiptImage, getReceiptImage, getReceiptAttachment, retryReceipt, retryAllFailedReceipts, getBookSummary, cleanupStuckReceipts } from './routes/receipts';
 import { exportBook } from './services/export';
 import { listIntegrations, upsertIntegration, deleteIntegration, syncIntegration, syncAllIntegrations, listIncomeTransactions, getIncomeSummary, listPayouts, markPayoutReceived, getIncomeDashboard } from './routes/income';
 import { triggerReconcile, backfillUsd, backfillFees, listCronRuns } from './routes/admin';
@@ -380,7 +380,11 @@ const worker = {
         if (method === 'DELETE') return paid(() => deleteReceipt(request, env, userId, bookId, receiptId));
       }
 
-      // Receipt retry
+      // Receipt retry (bulk first: "retry-failed" would otherwise match the per-receipt pattern)
+      const retryAllMatch = path.match(/^\/api\/books\/([^/]+)\/receipts\/retry-failed$/);
+      if (retryAllMatch && method === 'POST') {
+        return paid(() => retryAllFailedReceipts(request, env, userId, retryAllMatch[1], (p) => ctx.waitUntil(p)));
+      }
       const retryMatch = path.match(/^\/api\/books\/([^/]+)\/receipts\/([^/]+)\/retry$/);
       if (retryMatch && method === 'POST') {
         return paid(() => retryReceipt(request, env, userId, retryMatch[1], retryMatch[2], (p) => ctx.waitUntil(p)));
