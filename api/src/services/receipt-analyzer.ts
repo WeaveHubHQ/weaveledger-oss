@@ -98,9 +98,19 @@ export function setAnthropicBaseUrl(url?: string): void {
   if (url) anthropicBaseUrl = url.replace(/\/+$/, '');
 }
 
-async function callAnthropic(apiKey: string, messages: unknown[], provider: AiProvider = 'anthropic'): Promise<ReceiptAnalysis> {
-  const baseUrl = provider === 'weavehub' ? WEAVEHUB_AI_URL : anthropicBaseUrl;
-  const response = await fetch(`${baseUrl}/v1/messages`, {
+// Model retirement is the failure mode that silently broke every receipt for
+// six weeks (claude-sonnet-4-20250514 started 404ing). A pinned model id is a
+// dependency that rots on someone else's schedule, so a 404 not_found_error on
+// the model falls back to the next candidate instead of failing the receipt.
+// Ordered newest-first; the survivor is remembered for the isolate's lifetime.
+const MODEL_FALLBACKS = ['claude-sonnet-4-5', 'claude-sonnet-4-0'];
+
+function isRetiredModelError(status: number, body: string): boolean {
+  return status === 404 && /not_found_error/.test(body) && /model/i.test(body);
+}
+
+async function postAnthropic(baseUrl: string, apiKey: string, model: string, messages: unknown[]): Promise<Response> {
+  return fetch(`${baseUrl}/v1/messages`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -110,15 +120,37 @@ async function callAnthropic(apiKey: string, messages: unknown[], provider: AiPr
     body: JSON.stringify({
       // 4096 tokens covers receipts with long descriptions or many line items.
       // 1024 was truncating mid-JSON for emailed invoices and producing unparseable output.
-      model: anthropicModel,
+      model,
       max_tokens: 4096,
       system: SYSTEM_PROMPT,
       messages,
     }),
   });
+}
+
+async function callAnthropic(apiKey: string, messages: unknown[], provider: AiProvider = 'anthropic'): Promise<ReceiptAnalysis> {
+  const baseUrl = provider === 'weavehub' ? WEAVEHUB_AI_URL : anthropicBaseUrl;
+
+  // Try the configured model, then the fallback chain on a retirement 404 only.
+  const candidates = [anthropicModel, ...MODEL_FALLBACKS.filter(m => m !== anthropicModel)];
+  let response!: Response;
+  let errText = '';
+  for (let i = 0; i < candidates.length; i++) {
+    response = await postAnthropic(baseUrl, apiKey, candidates[i], messages);
+    if (response.ok) {
+      if (i > 0) {
+        // Sticky for this isolate so the whole batch doesn't re-probe the dead
+        // model, and loud enough to find in logs when receipts look fine.
+        console.error(`[receipt-analyzer] model "${candidates[i - 1]}" appears retired; fell back to "${candidates[i]}". Update the default.`);
+        anthropicModel = candidates[i];
+      }
+      break;
+    }
+    errText = await response.text();
+    if (!isRetiredModelError(response.status, errText)) break;
+  }
 
   if (!response.ok) {
-    const errText = await response.text();
     throw new Error(`Claude API error: ${response.status} ${errText}`);
   }
 
