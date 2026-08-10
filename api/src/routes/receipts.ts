@@ -374,6 +374,47 @@ export async function getReceiptAttachment(request: Request, env: Env, userId: s
   });
 }
 
+// Bulk retry: requeue every failed receipt in a book in one call. Mirrors
+// retryReceipt per row (status -> pending, notes cleared, processing kicked)
+// and caps the batch so a pathological book can't spawn unbounded workflows.
+const MAX_BULK_RETRY = 50;
+export async function retryAllFailedReceipts(request: Request, env: Env, userId: string, bookId: string, waitUntil?: (p: Promise<unknown>) => void): Promise<Response> {
+  if (!await canAccessBook(env.DB, userId, bookId, 'member')) {
+    return await bookEditDeniedError(env.DB, userId, bookId);
+  }
+
+  const failed = await env.DB.prepare(
+    "SELECT id, image_key, raw_email FROM receipts WHERE book_id = ? AND status = 'failed' ORDER BY created_at ASC LIMIT ?"
+  ).bind(bookId, MAX_BULK_RETRY + 1).all<{ id: string; image_key: string | null; raw_email: string | null }>();
+
+  const rows = failed.results.slice(0, MAX_BULK_RETRY);
+  const truncated = failed.results.length > MAX_BULK_RETRY;
+  if (!rows.length) return success({ retried: 0 }, 'No failed receipts to retry');
+
+  let retried = 0;
+  for (const r of rows) {
+    await env.DB.prepare(
+      "UPDATE receipts SET status = 'pending', notes = NULL, updated_at = datetime('now') WHERE id = ?"
+    ).bind(r.id).run();
+    try {
+      await startReceiptProcessing(env, r.id + '_retry_' + Date.now(), {
+        receiptId: r.id, bookId, userId,
+        imageKey: r.image_key || undefined,
+        emailBody: r.raw_email || undefined,
+      }, waitUntil);
+      retried++;
+    } catch {
+      await env.DB.prepare("UPDATE receipts SET status = 'processing' WHERE id = ?").bind(r.id).run();
+      retried++;
+    }
+  }
+
+  const msg = truncated
+    ? `${retried} receipts queued for reprocessing (more remain — run again after these finish)`
+    : `${retried} receipt${retried === 1 ? '' : 's'} queued for reprocessing`;
+  return success({ retried, truncated }, msg);
+}
+
 export async function retryReceipt(request: Request, env: Env, userId: string, bookId: string, receiptId: string, waitUntil?: (p: Promise<unknown>) => void): Promise<Response> {
   if (!await canAccessBook(env.DB, userId, bookId, 'member')) {
     return await bookEditDeniedError(env.DB, userId, bookId);

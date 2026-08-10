@@ -358,6 +358,7 @@ tr{cursor:pointer}
 <div class="page" id="pg-expenses">
   <div class="page-header"><div><h1 class="page-title">Expenses</h1><p class="page-subtitle" id="receiptsSubtitle">All expenses</p></div>
     <div style="display:flex;gap:8px;align-items:center">
+      <button class="btn btn-outline btn-sm" id="retryFailedBtn" style="display:none;color:#856404;border-color:rgba(133,100,4,.35);background:#fef3cd">Retry failed</button>
       <button class="btn btn-gold btn-sm" id="addReceiptBtn">+ Add Receipt</button>
       <button class="btn btn-outline btn-sm" id="uploadReceiptBtn" style="color:var(--navy);border-color:var(--cream-dark)">Upload Image</button>
       <button class="btn-refresh" id="refreshExpenses" title="Refresh">&#x21bb;</button>
@@ -1625,8 +1626,32 @@ async function loadReceipts(page){
     var d=await api(url);
     receipts=d.receipts||d||[];var pg=d.pagination;totalPages=pg?pg.pages:1;
     renderReceipts(receipts);renderPagination(pg);
+    updateRetryFailedBtn(bookId);
   }catch(e){$('receiptsTable').replaceChildren(el('tr',null,[el('td',{colspan:allBooksMode?'8':'7',className:'loading'},e.message)]))}
 }
+// "Retry failed" appears only for a single selected book (the bulk endpoint is
+// book-scoped) and only when that book actually has failed receipts.
+async function updateRetryFailedBtn(bookId){
+  var btn=$('retryFailedBtn');if(!btn)return;
+  if(!bookId){btn.style.display='none';return}
+  try{
+    var d=await api('/api/books/'+encodeURIComponent(bookId)+'/receipts?status=failed&limit=1');
+    var pg=d.pagination;var n=pg?pg.total:((d.receipts||d||[]).length);
+    if(n>0){btn.style.display='';btn.textContent='Retry '+n+' failed';btn.dataset.bookId=bookId;}
+    else btn.style.display='none';
+  }catch(e){btn.style.display='none'}
+}
+$('retryFailedBtn')&&$('retryFailedBtn').addEventListener('click',async function(){
+  var btn=this,bookId=btn.dataset.bookId;if(!bookId)return;
+  btn.disabled=true;var orig=btn.textContent;btn.textContent='Retrying...';
+  try{
+    var r=await api('/api/books/'+encodeURIComponent(bookId)+'/receipts/retry-failed',{method:'POST'});
+    var n=(r&&typeof r.retried==='number')?r.retried:0;
+    toast(n?(n+' receipt'+(n===1?'':'s')+' queued for reprocessing'+((r&&r.truncated)?' (more remain — run again when these finish)':'')):'No failed receipts to retry');
+    setTimeout(function(){loadReceipts(curPage)},2500);
+  }catch(e){toast(e.message,'error');btn.textContent=orig}
+  finally{btn.disabled=false}
+});
 ['receiptBookFilter','categoryFilter','statusFilter'].forEach(function(id){$(id).addEventListener('change',function(){loadReceipts(1)})});
 $('searchFilter').addEventListener('input',debounce(function(){loadReceipts(1)},400));
 $('dateFromFilter').addEventListener('change',function(){loadReceipts(1)});
