@@ -188,6 +188,26 @@ async function fetchFinanceReport(
   return { kind: 'ok', rows };
 }
 
+/**
+ * The true settlement window, taken from the report's own row dates.
+ *
+ * Apple writes these as MM/DD/YYYY and every row in a given report carries the
+ * same fiscal window, but we take min(start)/max(end) so a mixed report still
+ * yields a covering range. Returns nulls when the dates are absent/unparseable
+ * so the caller can fall back to the requested month.
+ */
+function fiscalPeriodFromRows(rows: FinanceRow[]): { start: string | null; end: string | null } {
+  const toIso = (v: string | undefined): string | null => {
+    const m = /^(\d{2})\/(\d{2})\/(\d{4})$/.exec((v || '').trim());
+    if (m) return `${m[3]}-${m[1]}-${m[2]}`;
+    const iso = /^(\d{4})-(\d{2})-(\d{2})$/.exec((v || '').trim());
+    return iso ? iso[0] : null;
+  };
+  const starts = rows.map((r) => toIso(r.startDate)).filter((v): v is string => !!v).sort();
+  const ends = rows.map((r) => toIso(r.endDate)).filter((v): v is string => !!v).sort();
+  return { start: starts[0] ?? null, end: ends.length ? ends[ends.length - 1] : null };
+}
+
 function parseFinanceTsv(text: string): FinanceRow[] {
   const lines = text.split('\n').filter((l) => l.trim() && !l.startsWith('Total'));
   if (lines.length < 2) return [];
@@ -253,13 +273,19 @@ async function upsertPayoutFromFinanceReport(
   if (currencies.length === 0) return { created: false, incomeRowsLinked: 0 };
   const localCurrency = currencies.length === 1 ? currencies[0] : 'USD';
 
-  // Period bounds: financeReports uses fiscal period, but we tag with the
-  // calendar month we queried for since that's what reconcile uses to match
-  // predicted payouts.
-  const [year, month] = reportDate.split('-').map((s) => parseInt(s, 10));
-  const periodStart = `${reportDate}-01`;
-  const periodEndDate = new Date(Date.UTC(year, month, 0));
-  const periodEnd = periodEndDate.toISOString().slice(0, 10);
+  // Period bounds come from the report's own fiscal dates, NOT the calendar
+  // month we queried. Apple's financeReports reportDate is a FISCAL period:
+  // reportDate=2026-06 covers 2026-03-01..2026-03-28 and 2026-07 covers
+  // 2026-03-29..2026-05-02. Tagging those as June/July mislabelled the payout
+  // by ~3 months and — because income rows are linked by
+  // transaction_date BETWEEN period_start AND period_end — attached the wrong
+  // income to the payout. The requested reportDate is kept in metadata.
+  const fiscal = fiscalPeriodFromRows(rows);
+  const [fy, fm] = reportDate.split('-').map((s) => parseInt(s, 10));
+  const fallbackEnd = new Date(Date.UTC(fy, fm, 0));
+  const periodStart = fiscal.start || `${reportDate}-01`;
+  const periodEnd = fiscal.end || fallbackEnd.toISOString().slice(0, 10);
+  const periodEndDate = new Date(`${periodEnd}T00:00:00Z`);
   const paidDate = new Date(periodEndDate.getTime() + FINANCE_PAYOUT_DELAY_DAYS * 86400_000)
     .toISOString().slice(0, 10);
 
@@ -274,13 +300,25 @@ async function upsertPayoutFromFinanceReport(
   // Idempotent on (source, source_payout_id).
   const sourcePayoutId = `apple_finance_${regionCode}_${reportDate}`;
 
-  // Check whether we already have a row (could be 'predicted' from
-  // reconcile that we should supersede, or 'paid' from a prior finance sync).
+  // Check whether we already have a row: this region's own prior row, or a
+  // still-'predicted' row for the same period that this settlement supersedes.
+  //
+  // The period fallback MUST NOT match another region's already-'paid' row.
+  // Apple issues one finance report per settlement region, and every region
+  // for a given reportDate produced identical period bounds, so an unscoped
+  // period match made each region UPDATE the previous region's row in place —
+  // only the last region processed survived (ZA, last in SETTLEMENT_REGIONS),
+  // silently discarding every other region's settlement. Scoping to
+  // status='predicted' keeps the supersede behaviour without the clobber.
+  // user_id is now applied to both branches (it previously only guarded the
+  // period branch, so a source_payout_id match could cross tenants).
   const existing = await env.DB.prepare(
-    `SELECT id, status FROM payouts WHERE source = 'apple_app_store'
-     AND (source_payout_id = ? OR (period_start = ? AND period_end = ? AND user_id = ?))
+    `SELECT id, status FROM payouts
+     WHERE source = 'apple_app_store' AND user_id = ?
+       AND (source_payout_id = ?
+            OR (status = 'predicted' AND period_start = ? AND period_end = ?))
      ORDER BY CASE WHEN source_payout_id = ? THEN 0 ELSE 1 END LIMIT 1`
-  ).bind(sourcePayoutId, periodStart, periodEnd, userId, sourcePayoutId).first<{ id: string; status: string }>();
+  ).bind(userId, sourcePayoutId, periodStart, periodEnd, sourcePayoutId).first<{ id: string; status: string }>();
 
   let payoutId: string;
   let created = false;
@@ -305,6 +343,7 @@ async function upsertPayoutFromFinanceReport(
       JSON.stringify({
         region_code: regionCode,
         report_date: reportDate,
+        fiscal_period: { start: periodStart, end: periodEnd },
         currencies: byCurrency,
         units: totalUnits,
         row_count: rows.length,
@@ -328,6 +367,7 @@ async function upsertPayoutFromFinanceReport(
       JSON.stringify({
         region_code: regionCode,
         report_date: reportDate,
+        fiscal_period: { start: periodStart, end: periodEnd },
         currencies: byCurrency,
         units: totalUnits,
         row_count: rows.length,
@@ -335,6 +375,23 @@ async function upsertPayoutFromFinanceReport(
       }),
     ).run();
   }
+
+  // Supersede reconcile's ESTIMATE for this window. reconcile.ts synthesises a
+  // per-calendar-month payout (source_payout_id '<source>_<period>_predicted')
+  // from income rows and the grace-period path later flips it to 'paid'. Once
+  // Apple's own finance report lands, both describe the SAME money — leaving
+  // the estimate 'paid' alongside the settlement double-counts revenue in the
+  // YTD-Paid tile. Real settlement wins; the estimate is marked 'superseded',
+  // a status no dashboard tile sums, so it drops out of the totals without
+  // destroying the record.
+  await env.DB.prepare(
+    `UPDATE payouts
+        SET status = 'superseded', updated_at = datetime('now')
+      WHERE user_id = ? AND source = 'apple_app_store'
+        AND source_payout_id LIKE '%_predicted'
+        AND status IN ('predicted', 'paid')
+        AND period_start <= ? AND period_end >= ?`
+  ).bind(userId, periodEnd, periodStart).run();
 
   // Link the matching income rows (those whose transaction_date falls in
   // the report period and are still pending/settled to this user).
