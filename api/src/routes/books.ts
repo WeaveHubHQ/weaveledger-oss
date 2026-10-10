@@ -23,7 +23,12 @@ export async function listBooks(request: Request, env: Env, userId: string): Pro
   return success({ owned: owned.results, shared: shared.results });
 }
 
-export async function createBook(request: Request, env: Env, userId: string): Promise<Response> {
+/**
+ * `onlyIfFirst`: the free-tier path. The insert happens only if the user owns
+ * no book they created themselves, checked in the same statement so two
+ * simultaneous requests can't both pass. Returns null when it didn't insert.
+ */
+export async function createBook(request: Request, env: Env, userId: string, onlyIfFirst = false): Promise<Response | null> {
   const body = await request.json<{ name: string; description?: string; currency?: string }>();
   if (!body.name) return error('Book name is required');
   if (body.name.length > 200) return error('Book name must be 200 characters or fewer');
@@ -31,9 +36,18 @@ export async function createBook(request: Request, env: Env, userId: string): Pr
   if (body.currency && body.currency.length > 10) return error('Invalid currency code');
 
   const id = generateId('book');
-  await env.DB.prepare(
-    'INSERT INTO books (id, owner_id, name, description, currency) VALUES (?, ?, ?, ?, ?)'
-  ).bind(id, userId, body.name, body.description || null, body.currency || 'USD').run();
+  if (onlyIfFirst) {
+    const res = await env.DB.prepare(
+      `INSERT INTO books (id, owner_id, name, description, currency)
+       SELECT ?, ?, ?, ?, ?
+       WHERE NOT EXISTS (SELECT 1 FROM books WHERE owner_id = ? AND auto_created = 0)`
+    ).bind(id, userId, body.name, body.description || null, body.currency || 'USD', userId).run();
+    if ((res.meta?.changes ?? 0) === 0) return null;
+  } else {
+    await env.DB.prepare(
+      'INSERT INTO books (id, owner_id, name, description, currency) VALUES (?, ?, ?, ?, ?)'
+    ).bind(id, userId, body.name, body.description || null, body.currency || 'USD').run();
+  }
 
   const book = await env.DB.prepare('SELECT * FROM books WHERE id = ?').bind(id).first();
   return success(book, 'Book created');

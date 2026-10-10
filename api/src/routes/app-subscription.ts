@@ -1,6 +1,7 @@
 import { Env } from '../types';
 import { generateId } from '../utils/crypto';
 import { error, success } from '../utils/response';
+import { isProActive } from '../middleware/auth';
 import { verifyAndDecodeJWS, decodeJWSPayload } from '../utils/apple-jws';
 
 /**
@@ -107,7 +108,7 @@ export async function verifyAppSubscription(request: Request, env: Env, userId: 
 
   // Update user subscription tier
   await env.DB.prepare(`
-    UPDATE users SET subscription_tier = 'pro', subscription_expires_at = ?, updated_at = datetime('now') WHERE id = ?
+    UPDATE users SET subscription_tier = 'pro', subscription_expires_at = ?, rc_last_event_ms = CAST(strftime('%s','now') AS INTEGER) * 1000, updated_at = datetime('now') WHERE id = ?
   `).bind(expiresDate, userId).run();
 
   // Register with centralized licensing worker (fire-and-forget)
@@ -135,37 +136,29 @@ export async function getAppSubscriptionStatus(request: Request, env: Env, userI
   if (env.HOSTED_PLATFORM === '1') {
     return success({ subscription_tier: 'pro', expires_at: null, source: 'hosted_plan' });
   }
+  // The users row is what paid routes are enforced against (requireSubscription),
+  // so report exactly that — same expiry and grace — and the app never shows
+  // Pro for something the API will then refuse.
+  const user = await env.DB.prepare(
+    'SELECT subscription_tier, subscription_expires_at FROM users WHERE id = ?'
+  ).bind(userId).first<{ subscription_tier: string; subscription_expires_at: string | null }>();
+
+  if (!isProActive(user)) return success({ subscription_tier: 'free' });
+
+  // Legacy StoreKit-verify row, if any, only contributes display metadata.
   const sub = await env.DB.prepare(`
-    SELECT product_id, status, expires_at, auto_renew_enabled
+    SELECT product_id, auto_renew_enabled
     FROM app_subscriptions
     WHERE user_id = ?
     ORDER BY expires_at DESC
     LIMIT 1
-  `).bind(userId).first<{ product_id: string; status: string; expires_at: string; auto_renew_enabled: number }>();
-
-  if (!sub) {
-    // Check if user has grandfathered pro access
-    const user = await env.DB.prepare(
-      'SELECT subscription_tier, subscription_expires_at FROM users WHERE id = ?'
-    ).bind(userId).first<{ subscription_tier: string; subscription_expires_at: string | null }>();
-
-    if (user && user.subscription_tier === 'pro' && user.subscription_expires_at) {
-      return success({
-        subscription_tier: 'pro',
-        expires_at: user.subscription_expires_at,
-        auto_renew_enabled: false,
-        product_id: null,
-      });
-    }
-
-    return success({ subscription_tier: 'free' });
-  }
+  `).bind(userId).first<{ product_id: string; auto_renew_enabled: number }>();
 
   return success({
-    subscription_tier: sub.status === 'active' || sub.status === 'grace_period' || sub.status === 'billing_retry' ? 'pro' : 'free',
-    expires_at: sub.expires_at,
-    auto_renew_enabled: !!sub.auto_renew_enabled,
-    product_id: sub.product_id,
+    subscription_tier: 'pro',
+    expires_at: user!.subscription_expires_at,
+    auto_renew_enabled: !!sub?.auto_renew_enabled,
+    product_id: sub?.product_id ?? null,
   });
 }
 
@@ -244,7 +237,7 @@ export async function restoreAppSubscription(request: Request, env: Env, userId:
 
   // Update user subscription tier with the latest expiry
   await env.DB.prepare(`
-    UPDATE users SET subscription_tier = 'pro', subscription_expires_at = ?, updated_at = datetime('now') WHERE id = ?
+    UPDATE users SET subscription_tier = 'pro', subscription_expires_at = ?, rc_last_event_ms = CAST(strftime('%s','now') AS INTEGER) * 1000, updated_at = datetime('now') WHERE id = ?
   `).bind(latestExpiry, userId).run();
 
   return success({ subscription_tier: 'pro', expires_at: latestExpiry, product_id: latestProductId });
@@ -339,7 +332,7 @@ export async function handleAppleNotificationWebhook(request: Request, env: Env)
         `).bind(transactionId, productId, bundleId, expiresDate, notificationType, subtype, existingSub.id).run();
 
         await env.DB.prepare(`
-          UPDATE users SET subscription_tier = 'pro', subscription_expires_at = COALESCE(?, subscription_expires_at), updated_at = datetime('now') WHERE id = ?
+          UPDATE users SET subscription_tier = 'pro', subscription_expires_at = COALESCE(?, subscription_expires_at), rc_last_event_ms = CAST(strftime('%s','now') AS INTEGER) * 1000, updated_at = datetime('now') WHERE id = ?
         `).bind(expiresDate, userId).run();
         break;
       }
@@ -376,7 +369,7 @@ export async function handleAppleNotificationWebhook(request: Request, env: Env)
         `).bind(notificationType, subtype, existingSub.id).run();
 
         await env.DB.prepare(`
-          UPDATE users SET subscription_tier = 'free', updated_at = datetime('now') WHERE id = ?
+          UPDATE users SET subscription_tier = 'free', rc_last_event_ms = CAST(strftime('%s','now') AS INTEGER) * 1000, updated_at = datetime('now') WHERE id = ?
         `).bind(userId).run();
         break;
       }
@@ -405,7 +398,7 @@ export async function handleAppleNotificationWebhook(request: Request, env: Env)
         `).bind(revocationDate, revocationReason ?? null, notificationType, subtype, existingSub.id).run();
 
         await env.DB.prepare(`
-          UPDATE users SET subscription_tier = 'free', updated_at = datetime('now') WHERE id = ?
+          UPDATE users SET subscription_tier = 'free', rc_last_event_ms = CAST(strftime('%s','now') AS INTEGER) * 1000, updated_at = datetime('now') WHERE id = ?
         `).bind(userId).run();
 
         // LED-37: write a negative income row referencing the original

@@ -105,6 +105,14 @@ export async function checkRateLimit(request: Request, db: D1Database, limit: nu
 }
 
 // Subscription paywall enforcement
+const PRO_GRACE_MS = 3 * 24 * 60 * 60 * 1000;
+
+/** The one definition of "this user row is Pro right now": tier pro and not past expiry + grace. */
+export function isProActive(user: { subscription_tier: string; subscription_expires_at: string | null } | null | undefined): boolean {
+  if (!user || user.subscription_tier !== 'pro' || !user.subscription_expires_at) return false;
+  return new Date(user.subscription_expires_at).getTime() + PRO_GRACE_MS > Date.now();
+}
+
 export async function requireSubscription(
   db: D1Database, userId: string, enforcement: string | undefined, licensingUrl?: string
 ): Promise<Response | null> {
@@ -118,11 +126,7 @@ export async function requireSubscription(
 
   if (!user) return error('User not found', 404);
 
-  if (user.subscription_tier === 'pro' && user.subscription_expires_at) {
-    const expiresAt = new Date(user.subscription_expires_at);
-    const grace = new Date(expiresAt.getTime() + 3 * 24 * 60 * 60 * 1000);
-    if (grace > new Date()) return null;
-  }
+  if (isProActive(user)) return null;
 
   // If using centralized licensing, check with the licensing worker as fallback
   if (enforcement === 'licensing' && licensingUrl) {
@@ -138,7 +142,7 @@ export async function requireSubscription(
           if (data.valid && data.license) {
             // Update local cache
             await db.prepare(
-              "UPDATE users SET subscription_tier = 'pro', subscription_expires_at = ? WHERE id = ?"
+              "UPDATE users SET subscription_tier = 'pro', subscription_expires_at = ?, rc_last_event_ms = CAST(strftime('%s','now') AS INTEGER) * 1000 WHERE id = ?"
             ).bind(data.license.expires_at, userId).run();
             return null;
           }

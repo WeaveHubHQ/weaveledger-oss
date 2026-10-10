@@ -19,6 +19,7 @@ export interface Env {
   LICENSING_URL?: string;             // "https://licensing.weavehub.app" (for SUBSCRIPTION_ENFORCEMENT=licensing)
   LICENSING_API_KEY?: string;         // Shared secret for authenticating with the licensing worker
   RC_WEBHOOK_SECRET?: string;         // Shared secret RevenueCat sends in the Authorization header (LED-27)
+  RC_SANDBOX_USER_IDS?: string;          // comma-separated usr_ ids whose SANDBOX RevenueCat events are honored (App Review demo account)
 }
 
 // Cloudflare Email Service (April 2026 public beta) outbound message shape.

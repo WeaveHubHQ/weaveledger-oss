@@ -313,7 +313,12 @@ const worker = {
         return addCors(await listBooks(request, env, userId));
       }
       if (path === '/api/books' && method === 'POST') {
-        return paid(() => createBook(request, env, userId));
+        // Pro: any number of books. Free: one book of your own (a book the
+        // email handler auto-created doesn't count) — without one the free
+        // tier has nothing to read.
+        const denied = await requireSubscription(env.DB, userId, env.SUBSCRIPTION_ENFORCEMENT, env.LICENSING_URL);
+        if (!denied) return addCors((await createBook(request, env, userId))!);
+        return addCors((await createBook(request, env, userId, true)) ?? denied);
       }
 
       // Book-specific routes

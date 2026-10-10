@@ -80,7 +80,7 @@ export async function handleInboundEmail(message: EmailMessage, env: Env, waitUn
   if (!book) {
     const bookId = generateId('book');
     await env.DB.prepare(
-      'INSERT INTO books (id, owner_id, name, description) VALUES (?, ?, ?, ?)'
+      'INSERT INTO books (id, owner_id, name, description, auto_created) VALUES (?, ?, ?, ?, 1)'
     ).bind(bookId, user.id, 'Default', 'Auto-created for email receipts').run();
     book = { id: bookId };
   }
