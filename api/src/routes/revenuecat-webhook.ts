@@ -75,6 +75,48 @@ const SOFT_EVENTS = new Set([
   'BILLING_ISSUE',
 ]);
 
+/**
+ * Ask RevenueCat what a customer is entitled to right now. Used where the
+ * event itself doesn't say (TRANSFER carries only two id lists).
+ *
+ * Uses the v2 API (v2 secret keys are rejected by v1): the customer's
+ * subscriptions, keeping those that currently give access to the Pro
+ * entitlement. Returns null when RC_API_KEY / RC_PROJECT_ID aren't configured.
+ * Throws on a failed request so the webhook answers 5xx and RevenueCat
+ * redelivers.
+ */
+async function fetchProEntitlement(
+  env: Env, appUserId: string,
+): Promise<{ active: boolean; expiresAt: string | null; sandbox: boolean } | null> {
+  if (!env.RC_API_KEY || !env.RC_PROJECT_ID) return null;
+  const base = env.RC_API_URL || 'https://api.revenuecat.com';
+  const res = await fetch(
+    `${base}/v2/projects/${encodeURIComponent(env.RC_PROJECT_ID)}/customers/${encodeURIComponent(appUserId)}/subscriptions`,
+    { headers: { Authorization: `Bearer ${env.RC_API_KEY}` } },
+  );
+  if (!res.ok) throw new Error(`RevenueCat subscription lookup failed: ${res.status}`);
+  const data = await res.json<{
+    items?: {
+      gives_access?: boolean;
+      environment?: string;
+      current_period_ends_at?: number | null;
+      entitlements?: { items?: { lookup_key?: string }[] };
+    }[];
+  }>();
+  const now = Date.now();
+  const live = (data.items || []).filter((sub) =>
+    sub.gives_access === true
+    && (sub.entitlements?.items || []).some((e) => e.lookup_key === PRO_ENTITLEMENT)
+    && finiteMs(sub.current_period_ends_at) !== null
+    && (sub.current_period_ends_at as number) > now);
+  if (live.length === 0) return { active: false, expiresAt: null, sandbox: false };
+  // A real subscription outranks a sandbox one; among equals, the latest expiry.
+  const production = live.filter((sub) => sub.environment !== 'sandbox');
+  const pool = production.length > 0 ? production : live;
+  const latest = Math.max(...pool.map((sub) => sub.current_period_ends_at as number));
+  return { active: true, expiresAt: new Date(latest).toISOString(), sandbox: production.length === 0 };
+}
+
 export async function handleRevenueCatWebhook(request: Request, env: Env): Promise<Response> {
   // 1. Auth — shared-secret bearer, compared byte-for-byte.
   const expected = env.RC_WEBHOOK_SECRET;
@@ -165,8 +207,19 @@ export async function handleRevenueCatWebhook(request: Request, env: Env): Promi
       // the old account's expiry to the new one; the next RENEWAL corrects it.
       const fromIds = (event.transferred_from || []).filter((u) => u.startsWith('usr_'));
       const toIds = (event.transferred_to || []).filter((u) => u.startsWith('usr_'));
+      // What the new account is entitled to comes from RevenueCat itself when
+      // an API key is configured: the old account may be an anonymous id we
+      // hold nothing for, so there may be no local expiry to carry over.
+      const grants = new Map<string, { expiresAt: string | null } | 'denied'>();
+      for (const id of toIds) {
+        const ent = await fetchProEntitlement(env, id);
+        if (!ent) continue;
+        const sandboxOk = !ent.sandbox || sandboxAllowed.has(id);
+        grants.set(id, ent.active && sandboxOk ? { expiresAt: ent.expiresAt } : 'denied');
+      }
+      // Fallback without an API key: carry the old account's stored expiry.
       // Read before writing, and regardless of tier, so a redelivery after a
-      // partial failure still finds the expiry to carry.
+      // partial failure still finds it.
       let carriedExpiry: string | null = null;
       for (const id of fromIds) {
         const row = await env.DB.prepare('SELECT subscription_expires_at FROM users WHERE id = ?')
@@ -178,10 +231,22 @@ export async function handleRevenueCatWebhook(request: Request, env: Env): Promi
       }
       // One batch = one transaction: the old account is never freed without
       // the new one being granted.
-      const stmts = [
-        ...fromIds.map((id) => stateStatement(id, 'free', null)),
-        ...toIds.map((id) => stateStatement(id, 'pro', carriedExpiry)),
-      ];
+      const stmts = [...fromIds.map((id) => stateStatement(id, 'free', null))];
+      for (const id of toIds) {
+        const grant = grants.get(id);
+        if (grant === 'denied') continue;
+        const expiry = grant ? grant.expiresAt : carriedExpiry;
+        if (!expiry) {
+          // Pro with no expiry is not Pro to the API. Nothing to stand on:
+          // leave the account alone; its next renewal event will grant it.
+          console.warn(`[RC] Transfer to ${id}: no entitlement source (set RC_API_KEY to reconcile transfers)`);
+          continue;
+        }
+        stmts.push(stateStatement(id, 'pro', expiry));
+        // The lookup doesn't give the store product id the superseded-subscription
+        // guard compares against, so clear it; the next grant event sets it again.
+        if (grant) stmts.push(env.DB.prepare('UPDATE users SET rc_product_id = NULL WHERE id = ?').bind(id));
+      }
       const results = stmts.length ? await env.DB.batch(stmts) : [];
       const touched = results.filter((r) => (r.meta?.changes ?? 0) > 0).length;
       processStatus = fromIds.length + toIds.length === 0 ? 'skipped_no_user' : touched > 0 ? 'applied' : 'skipped_stale';

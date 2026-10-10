@@ -1,13 +1,17 @@
 #!/usr/bin/env python3
 """End-to-end check of POST /api/webhooks/revenuecat against a running API.
 
-  wrangler dev --var RC_WEBHOOK_SECRET:local-test-secret        (local D1, migrations applied)
+  wrangler dev --var RC_WEBHOOK_SECRET:local-test-secret --var SUBSCRIPTION_ENFORCEMENT:apple \\
+               --var RC_API_KEY:local-test-key --var RC_PROJECT_ID:projlocal --var RC_API_URL:http://localhost:8799
+  (local D1, migrations applied). This script serves a stand-in for RevenueCat's
+  subscriber API on port 8799 so transfers can be reconciled end to end.
   WL_EMAIL=... WL_PASSWORD=... python3 scripts/verify-revenuecat-webhook.py
 
 Uses one existing account and leaves it Pro. Never point this at production:
 it rewrites that account's subscription state.
 """
-import json, os, sys, time, urllib.error, urllib.parse, urllib.request
+import json, os, sys, threading, time, urllib.error, urllib.parse, urllib.request
+from http.server import BaseHTTPRequestHandler, HTTPServer
 
 BASE = os.environ.get("WL_BASE", "http://localhost:8787")
 SECRET = os.environ.get("RC_WEBHOOK_SECRET", "local-test-secret")
@@ -52,6 +56,31 @@ def tier():
     return call("GET", "/api/app-subscription/status", headers=AUTH)[1]["data"]["subscription_tier"]
 
 
+# Stand-in for RevenueCat's v2 GET …/customers/<id>/subscriptions: the list of
+# subscriptions "RevenueCat" says each id holds.
+RC_SUBSCRIPTIONS = {}
+
+
+class RCStub(BaseHTTPRequestHandler):
+    def do_GET(self):
+        parts = self.path.split("/")
+        customer = urllib.parse.unquote(parts[-2]) if parts[-1] == "subscriptions" else ""
+        body = json.dumps({"object": "list", "items": RC_SUBSCRIPTIONS.get(customer, [])}).encode()
+        self.send_response(200); self.send_header("content-type", "application/json"); self.end_headers(); self.wfile.write(body)
+
+    def log_message(self, *args):
+        pass
+
+
+threading.Thread(target=HTTPServer(("127.0.0.1", 8799), RCStub).serve_forever, daemon=True).start()
+
+
+def paid_route_allows():
+    """A real paid route: Pro may create a second book, free may not."""
+    status, _ = call("POST", "/api/books", {"name": "verify-script " + RUN + "-" + str(seq[0])}, AUTH)
+    return status == 200
+
+
 failed = []
 
 
@@ -86,7 +115,22 @@ s, d = hook("RENEWAL", app_user_id="$RCAnonymousID:abc"); check("anonymous id is
 s, d = hook("RENEWAL", app_user_id="usr_" + "0" * 32, expiration_at_ms=NOW + DAY); check("unknown usr_ is skipped", d == "skipped_no_user", d)
 s, d = hook("RENEWAL", app_user_id="$RCAnonymousID:abc", aliases=[USER], expiration_at_ms=NOW + 60 * DAY); check("alias resolves the user", d == "applied", d)
 s, d = hook("TRANSFER", entitlement_ids=None, transferred_from=[USER], transferred_to=["usr_" + "0" * 32]); check("transfer away -> free", d == "applied" and tier() == "free", (d, tier()))
-s, d = hook("TRANSFER", entitlement_ids=None, transferred_from=["$RCAnonymousID:abc"], transferred_to=[USER]); check("transfer in -> tier pro (expiry from next renewal)", d == "applied", d)
+call("POST", "/api/books", {"name": "verify-script first book"}, AUTH)  # make sure a first (free) book exists
+check("free account is refused by a paid route", tier() == "free" and not paid_route_allows(), tier())
+RC_SUBSCRIPTIONS[USER] = []
+s, d = hook("TRANSFER", entitlement_ids=None, transferred_from=["$RCAnonymousID:abc"], transferred_to=[USER]); check("transfer in, RevenueCat says no entitlement -> stays free", tier() == "free" and not paid_route_allows(), (d, tier()))
+PROD = "app.weavehub.weaveledger.pro.annual"
+RC_SUBSCRIPTIONS[USER] = [{"gives_access": True, "environment": "sandbox", "current_period_ends_at": NOW + 200 * DAY, "entitlements": {"items": [{"lookup_key": "pro"}]}}]
+s, d = hook("TRANSFER", entitlement_ids=None, transferred_from=["$RCAnonymousID:abc"], transferred_to=[USER]); check("transfer in of a sandbox subscription -> stays free", tier() == "free", (d, tier()))
+RC_SUBSCRIPTIONS[USER] = [{"gives_access": True, "environment": "production", "current_period_ends_at": NOW + 200 * DAY, "entitlements": {"items": [{"lookup_key": "other"}]}}]
+s, d = hook("TRANSFER", entitlement_ids=None, transferred_from=["$RCAnonymousID:abc"], transferred_to=[USER]); check("transfer in of a non-Pro subscription -> stays free", tier() == "free", (d, tier()))
+RC_SUBSCRIPTIONS[USER][0]["entitlements"]["items"][0]["lookup_key"] = "pro"
+s, d = hook("TRANSFER", entitlement_ids=None, transferred_from=["$RCAnonymousID:abc"], transferred_to=[USER]); check("transfer in from an anonymous id -> Pro, and a paid route allows it", d == "applied" and tier() == "pro" and paid_route_allows(), (d, tier()))
+s, d = hook("EXPIRATION", app_user_id=USER, expiration_at_ms=NOW - DAY, product_id=PROD); check("then it expires -> free", tier() == "free", (d, tier()))
+fake = json.dumps({"originalTransactionId": "1", "transactionId": "1", "productId": PROD, "bundleId": "app.weavehub.WeaveLedger", "expiresDate": NOW + 300 * DAY, "environment": "Production"})
+s1, _ = call("POST", "/api/app-subscription/verify", {"signedTransactionInfo": fake}, AUTH)
+s2, _ = call("POST", "/api/app-subscription/restore", {"signedTransactions": [fake, "aaa." + urllib.parse.quote(fake) + ".bbb"]}, AUTH)
+check("made-up transaction cannot buy Pro (verify + restore)", s1 >= 400 and tier() == "free" and not paid_route_allows(), (s1, s2, tier()))
 s, d = hook("TRANSFER", entitlement_ids=None, transferred_from=["$RCAnonymousID:a"], transferred_to=["$RCAnonymousID:b"]); check("transfer with no known users is skipped", d == "skipped_no_user", d)
 s, d = hook("RENEWAL", app_user_id=USER, expiration_at_ms=NOW + 400 * DAY); check("renewal -> pro (final state)", d == "applied" and tier() == "pro", (d, tier()))
 

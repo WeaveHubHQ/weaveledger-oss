@@ -2,40 +2,37 @@ import { Env } from '../types';
 import { generateId } from '../utils/crypto';
 import { error, success } from '../utils/response';
 import { isProActive } from '../middleware/auth';
-import { verifyAndDecodeJWS, decodeJWSPayload } from '../utils/apple-jws';
+import { verifyAndDecodeJWS } from '../utils/apple-jws';
 
 /**
- * Attempt to verify and decode a signed transaction string.
- * Tries full JWS verification first (production Apple-signed transactions),
- * then falls back to unverified JWS decode (sandbox), then raw JSON parse
- * (StoreKit 2 jsonRepresentation which is unsigned JSON, not JWS).
+ * Verify an Apple-signed transaction (JWS) and return its payload.
+ *
+ * Only Apple's signature is accepted. Earlier versions fell back to decoding
+ * unsigned JWS and raw JSON "for sandbox", which let any signed-in user grant
+ * themselves Pro by posting a made-up transaction.
  */
-async function verifyOrDecodeTransaction(signedTxn: string): Promise<{ txnInfo: Record<string, unknown>; verified: boolean }> {
-  // 1. Try full Apple JWS verification (production)
-  try {
-    const txnInfo = await verifyAndDecodeJWS(signedTxn);
-    return { txnInfo, verified: true };
-  } catch {
-    // Fall through
-  }
+async function verifyTransaction(signedTxn: string): Promise<Record<string, unknown>> {
+  return verifyAndDecodeJWS(signedTxn);
+}
 
-  // 2. Try unverified JWS decode (sandbox — valid JWS format but not Apple-signed)
-  try {
-    const txnInfo = decodeJWSPayload(signedTxn);
-    console.warn('JWS verification failed, fell back to unverified JWS decode (sandbox?)');
-    return { txnInfo, verified: false };
-  } catch {
-    // Fall through
+/**
+ * A verified transaction still has to be for THIS app's Pro product, bought
+ * for real: sandbox purchases are free, so they only count for accounts
+ * listed in RC_SANDBOX_USER_IDS (e.g. the App Review demo account).
+ */
+function transactionGrantsPro(
+  env: Env, userId: string,
+  txn: { bundleId: string; productId: string; environment: string },
+): string | null {
+  if (env.APPLE_BUNDLE_ID) {
+    if (txn.bundleId !== env.APPLE_BUNDLE_ID) return 'Bundle ID mismatch';
+    if (!txn.productId.startsWith(env.APPLE_BUNDLE_ID.toLowerCase() + '.pro.')) return 'Not a Pro product';
   }
-
-  // 3. Try raw JSON parse (StoreKit 2 jsonRepresentation — not JWS at all)
-  try {
-    const txnInfo = JSON.parse(signedTxn) as Record<string, unknown>;
-    console.warn('Transaction is raw JSON (not JWS), accepted as unverified (sandbox/testing)');
-    return { txnInfo, verified: false };
-  } catch {
-    throw new Error('Invalid signed transaction: not a valid JWS or JSON');
+  if (txn.environment !== 'Production') {
+    const allowed = (env.RC_SANDBOX_USER_IDS || '').split(',').map((v) => v.trim());
+    if (!allowed.includes(userId)) return 'Sandbox purchases do not unlock Pro on this server';
   }
+  return null;
 }
 
 // POST /api/app-subscription/verify
@@ -48,8 +45,7 @@ export async function verifyAppSubscription(request: Request, env: Env, userId: 
 
   let txnInfo: Record<string, unknown>;
   try {
-    const result = await verifyOrDecodeTransaction(body.signedTransactionInfo);
-    txnInfo = result.txnInfo;
+    txnInfo = await verifyTransaction(body.signedTransactionInfo);
   } catch (e) {
     console.error('Failed to verify signed transaction:', e);
     return error('Invalid signed transaction');
@@ -72,10 +68,8 @@ export async function verifyAppSubscription(request: Request, env: Env, userId: 
     return error('Transaction missing required fields (originalTransactionId, productId, expiresDate)');
   }
 
-  // M-3: Validate bundle ID matches expected value (skip if not set or empty)
-  if (env.APPLE_BUNDLE_ID && bundleId && bundleId !== env.APPLE_BUNDLE_ID) {
-    return error('Bundle ID mismatch');
-  }
+  const refusal = transactionGrantsPro(env, userId, { bundleId, productId, environment });
+  if (refusal) return error(refusal, 403);
 
   const id = generateId('appsub');
 
@@ -176,8 +170,7 @@ export async function restoreAppSubscription(request: Request, env: Env, userId:
   for (const signedTxn of body.signedTransactions) {
     let txnInfo: Record<string, unknown>;
     try {
-      const result = await verifyOrDecodeTransaction(signedTxn);
-      txnInfo = result.txnInfo;
+      txnInfo = await verifyTransaction(signedTxn);
     } catch {
       continue; // Skip malformed or unverifiable transactions
     }
@@ -197,8 +190,7 @@ export async function restoreAppSubscription(request: Request, env: Env, userId:
 
     if (!originalTransactionId || !productId || !expiresDate) continue;
 
-    // M-3: Validate bundle ID matches expected value (skip if not set or empty)
-    if (env.APPLE_BUNDLE_ID && bundleId && bundleId !== env.APPLE_BUNDLE_ID) continue;
+    if (transactionGrantsPro(env, userId, { bundleId, productId, environment })) continue;
 
     const id = generateId('appsub');
 
