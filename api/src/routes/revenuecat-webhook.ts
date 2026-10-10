@@ -17,6 +17,17 @@ import { error, success } from '../utils/response';
 // conflict path and we return 200 without re-processing — RC retries
 // aggressively on 5xx and we do NOT want to double-grant entitlements.
 
+// The one entitlement this backend acts on. Events for anything else are
+// recorded and skipped.
+const PRO_ENTITLEMENT = 'pro';
+// Fallback when an event carries no entitlement list at all: our own Pro SKUs.
+const PRO_PRODUCT_PREFIX = 'app.weavehub.weaveledger.pro.';
+// Tolerated clock skew for event timestamps. A timestamp further ahead than
+// this is clamped, so one bad event can't freeze a user's state forever.
+const MAX_FUTURE_SKEW_MS = 5 * 60_000;
+
+const finiteMs = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) ? v : null);
+
 interface RevenueCatEvent {
   id: string;
   type: string;
@@ -114,87 +125,123 @@ export async function handleRevenueCatWebhook(request: Request, env: Env): Promi
     return success({ event_id: event.id, status: 'duplicate' });
   }
 
-  // 4. Process. We resolve the WeaveLedger user from app_user_id (set via
-  //    Purchases.shared.logIn from the iOS app). RC sometimes sends
-  //    original_app_user_id when an alias was generated client-side before
-  //    logIn — accept either.
-  const candidates = [event.app_user_id, event.original_app_user_id, ...(event.aliases || [])]
-    .filter((s): s is string => typeof s === 'string' && s.length > 0);
-  const userId = candidates.find((id) => id.startsWith('usr_')) || null;
+  // 4. Process.
+  //
+  // Every state change is guarded by `rc_last_event_ms`: an event only
+  // applies if it is at least as new as the last one applied to that user,
+  // so a late redelivery of an old EXPIRATION can't undo a RENEWAL (and
+  // vice versa).
+  const eventMs = Math.min(finiteMs(event.event_timestamp_ms) ?? Date.now(), Date.now() + MAX_FUTURE_SKEW_MS);
+  type Status = 'applied' | 'skipped_no_user' | 'skipped_unhandled' | 'skipped_sandbox' | 'skipped_entitlement' | 'skipped_stale' | 'skipped_superseded';
+  let processStatus: Status = 'skipped_unhandled';
 
-  let processStatus: 'applied' | 'skipped_no_user' | 'skipped_unhandled' = 'skipped_unhandled';
+  // tier: explicit value, or null to leave it alone. expiresAt: null keeps the stored value.
+  const stateStatement = (id: string, tier: 'pro' | 'free' | null, expiresAt: string | null) =>
+    env.DB.prepare(
+      `UPDATE users SET subscription_tier = COALESCE(?, subscription_tier),
+                        subscription_expires_at = COALESCE(?, subscription_expires_at),
+                        rc_last_event_ms = ?,
+                        updated_at = datetime('now')
+       WHERE id = ? AND COALESCE(rc_last_event_ms, 0) <= ?`
+    ).bind(tier, expiresAt, eventMs, id, eventMs);
+  const applyState = async (id: string, tier: 'pro' | 'free' | null, expiresAt: string | null): Promise<boolean> =>
+    ((await stateStatement(id, tier, expiresAt).run()).meta?.changes ?? 0) > 0;
+  const userExists = async (id: string): Promise<boolean> =>
+    !!(await env.DB.prepare('SELECT 1 FROM users WHERE id = ?').bind(id).first());
 
   try {
-    if (!userId) {
-      processStatus = 'skipped_no_user';
-      console.warn(`[RC] No usr_ in event ${event.id} candidates: ${candidates.join(',')}`);
-    } else if (GRANTING_EVENTS.has(event.type)) {
-      const expiresAt = event.expiration_at_ms
-        ? new Date(event.expiration_at_ms).toISOString()
-        : null;
-      await env.DB.prepare(
-        `UPDATE users SET subscription_tier = 'pro',
-                          subscription_expires_at = COALESCE(?, subscription_expires_at),
-                          updated_at = datetime('now')
-         WHERE id = ?`
-      ).bind(expiresAt, userId).run();
-      processStatus = 'applied';
-      console.log(`[RC] Granted pro to ${userId} via ${event.type} expires=${expiresAt}`);
-    } else if (REVOKING_EVENTS.has(event.type)) {
-      // Honor any future-dated expiry the event still carries (e.g., paused
-      // subscription with grace), otherwise downgrade immediately.
-      const expiresAt = event.expiration_at_ms
-        ? new Date(event.expiration_at_ms).toISOString()
-        : new Date().toISOString();
-      const stillActive = event.expiration_at_ms && event.expiration_at_ms > Date.now();
-      await env.DB.prepare(
-        `UPDATE users SET subscription_tier = ?,
-                          subscription_expires_at = ?,
-                          updated_at = datetime('now')
-         WHERE id = ?`
-      ).bind(stillActive ? 'pro' : 'free', expiresAt, userId).run();
-      processStatus = 'applied';
-      console.log(`[RC] Revoked/expired ${userId} via ${event.type} (still_active=${!!stillActive})`);
-    } else if (SOFT_EVENTS.has(event.type)) {
-      // Cancellation / billing issue: user keeps entitlement until expiry.
-      // Just refresh the expiry so the client sees the most recent value.
-      if (event.expiration_at_ms) {
-        const expiresAt = new Date(event.expiration_at_ms).toISOString();
-        await env.DB.prepare(
-          `UPDATE users SET subscription_expires_at = ?, updated_at = datetime('now')
-           WHERE id = ?`
-        ).bind(expiresAt, userId).run();
-      }
-      processStatus = 'applied';
-      console.log(`[RC] Soft event ${event.type} for ${userId} — no tier change`);
+    // Sandbox (Xcode / TestFlight / App Review) purchases cost nothing, so they
+    // never change state here — except for accounts named in
+    // RC_SANDBOX_USER_IDS (comma-separated usr_ ids), e.g. the App Review demo
+    // account, whose sandbox purchase has to unlock the paid API routes.
+    const sandboxAllowed = new Set((env.RC_SANDBOX_USER_IDS || '').split(',').map((v) => v.trim()).filter(Boolean));
+    const eventUserIds = [event.app_user_id, event.original_app_user_id, ...(event.aliases || []),
+      ...(event.transferred_from || []), ...(event.transferred_to || [])].filter((v): v is string => typeof v === 'string');
+    if (event.environment === 'SANDBOX' && !eventUserIds.some((id) => sandboxAllowed.has(id))) {
+      processStatus = 'skipped_sandbox';
     } else if (event.type === 'TRANSFER') {
-      // Subscription moved between accounts. transferred_from = old user(s),
-      // transferred_to (or app_user_id) = new user. We downgrade the old and
-      // grant the new.
-      const oldUsers = (event.transferred_from || []).filter((u) => u.startsWith('usr_'));
-      const newUser = userId; // already resolved from app_user_id
-      const expiresAt = event.expiration_at_ms
-        ? new Date(event.expiration_at_ms).toISOString()
-        : null;
-      for (const oldId of oldUsers) {
-        await env.DB.prepare(
-          `UPDATE users SET subscription_tier = 'free', updated_at = datetime('now') WHERE id = ?`
-        ).bind(oldId).run();
+      // The subscription moved between accounts. TRANSFER carries no
+      // app_user_id, expiry, or entitlements — only the two id lists. Move
+      // the old account's expiry to the new one; the next RENEWAL corrects it.
+      const fromIds = (event.transferred_from || []).filter((u) => u.startsWith('usr_'));
+      const toIds = (event.transferred_to || []).filter((u) => u.startsWith('usr_'));
+      // Read before writing, and regardless of tier, so a redelivery after a
+      // partial failure still finds the expiry to carry.
+      let carriedExpiry: string | null = null;
+      for (const id of fromIds) {
+        const row = await env.DB.prepare('SELECT subscription_expires_at FROM users WHERE id = ?')
+          .bind(id).first<{ subscription_expires_at: string | null }>();
+        const t = row?.subscription_expires_at ? new Date(row.subscription_expires_at).getTime() : NaN;
+        if (Number.isFinite(t) && (!carriedExpiry || t > new Date(carriedExpiry).getTime())) {
+          carriedExpiry = new Date(t).toISOString();
+        }
       }
-      if (newUser) {
-        await env.DB.prepare(
-          `UPDATE users SET subscription_tier = 'pro',
-                            subscription_expires_at = COALESCE(?, subscription_expires_at),
-                            updated_at = datetime('now')
-           WHERE id = ?`
-        ).bind(expiresAt, newUser).run();
-      }
-      processStatus = 'applied';
-      console.log(`[RC] Transfer: from=${oldUsers.join(',')} to=${newUser}`);
+      // One batch = one transaction: the old account is never freed without
+      // the new one being granted.
+      const stmts = [
+        ...fromIds.map((id) => stateStatement(id, 'free', null)),
+        ...toIds.map((id) => stateStatement(id, 'pro', carriedExpiry)),
+      ];
+      const results = stmts.length ? await env.DB.batch(stmts) : [];
+      const touched = results.filter((r) => (r.meta?.changes ?? 0) > 0).length;
+      processStatus = fromIds.length + toIds.length === 0 ? 'skipped_no_user' : touched > 0 ? 'applied' : 'skipped_stale';
+      console.log(`[RC] Transfer from=${fromIds.join(',')} to=${toIds.join(',')} expiry=${carriedExpiry} status=${processStatus}`);
     } else {
-      // Unknown / unhandled event — recorded but no state change. INVOICE_ISSUANCE,
-      // VIRTUAL_CURRENCY_TRANSACTION, SUBSCRIBER_ALIAS, etc.
-      console.log(`[RC] Recorded ${event.type} (no handler) for ${userId}`);
+      // The WeaveLedger user is the usr_ id set via Purchases.logIn; RC may
+      // carry it as app_user_id, original_app_user_id, or an alias.
+      const candidates = [event.app_user_id, event.original_app_user_id, ...(event.aliases || [])]
+        .filter((s): s is string => typeof s === 'string' && s.length > 0);
+      const userId = candidates.find((id) => id.startsWith('usr_')) || null;
+      // An explicit entitlement list decides. If the event carries none at
+      // all, fall back to the product id rather than dropping a real renewal.
+      const forPro = Array.isArray(event.entitlement_ids)
+        ? event.entitlement_ids.includes(PRO_ENTITLEMENT)
+        : (event.product_id || '').startsWith(PRO_PRODUCT_PREFIX);
+      const handled = GRANTING_EVENTS.has(event.type) || REVOKING_EVENTS.has(event.type) || SOFT_EVENTS.has(event.type);
+
+      if (!handled) {
+        console.log(`[RC] Recorded ${event.type} (no handler)`);
+      } else if (!userId || !(await userExists(userId))) {
+        processStatus = 'skipped_no_user';
+        console.warn(`[RC] No known usr_ in event ${event.id}`);
+      } else if (!forPro) {
+        processStatus = 'skipped_entitlement';
+        console.log(`[RC] ${event.type} for ${userId} does not carry the ${PRO_ENTITLEMENT} entitlement — skipped`);
+      } else {
+        const expMs = finiteMs(event.expiration_at_ms);
+        const expiresAt = expMs ? new Date(expMs).toISOString() : null;
+        let tier: 'pro' | 'free' | null;
+        let expiry = expiresAt;
+        if (GRANTING_EVENTS.has(event.type)) {
+          // A grant whose period has already ended (late delivery) is not a grant.
+          tier = expMs !== null && expMs <= Date.now() ? 'free' : 'pro';
+        } else if (REVOKING_EVENTS.has(event.type)) {
+          tier = expMs !== null && expMs > Date.now() ? 'pro' : 'free';
+          expiry = expiresAt ?? new Date().toISOString();
+        } else {
+          // Cancellation / billing issue: entitlement runs to period end, so only
+          // refresh the expiry — unless that period is already over (a refund).
+          tier = expMs !== null && expMs <= Date.now() ? 'free' : null;
+        }
+        // An event that would end Pro, but is about a different product than
+        // the one this user is on, while that one still has time left: an
+        // older subscription lapsing must not take the newer one with it.
+        const current = tier === 'free'
+          ? await env.DB.prepare('SELECT rc_product_id, subscription_expires_at FROM users WHERE id = ?')
+              .bind(userId).first<{ rc_product_id: string | null; subscription_expires_at: string | null }>()
+          : null;
+        const superseded = !!current?.rc_product_id && !!event.product_id && current.rc_product_id !== event.product_id
+          && !!current.subscription_expires_at && new Date(current.subscription_expires_at).getTime() > Date.now();
+        if (superseded) {
+          processStatus = 'skipped_superseded';
+        } else {
+          processStatus = (await applyState(userId, tier, expiry)) ? 'applied' : 'skipped_stale';
+          if (processStatus === 'applied' && tier === 'pro' && event.product_id) {
+            await env.DB.prepare('UPDATE users SET rc_product_id = ? WHERE id = ?').bind(event.product_id, userId).run();
+          }
+        }
+        console.log(`[RC] ${event.type} for ${userId}: tier=${tier ?? 'unchanged'} expires=${expiry} status=${processStatus}`);
+      }
     }
   } catch (e: any) {
     // Applying failed (e.g. a transient D1 error). Drop the dedupe row and
