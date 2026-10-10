@@ -20,6 +20,9 @@ export interface Env {
   LICENSING_API_KEY?: string;         // Shared secret for authenticating with the licensing worker
   RC_WEBHOOK_SECRET?: string;         // Shared secret RevenueCat sends in the Authorization header (LED-27)
   RC_SANDBOX_USER_IDS?: string;          // comma-separated usr_ ids whose SANDBOX RevenueCat events are honored (App Review demo account)
+  RC_API_KEY?: string;                   // RevenueCat v2 secret API key (sk_…): lets the webhook read a customer's entitlement when an event doesn't carry it (TRANSFER)
+  RC_PROJECT_ID?: string;                // RevenueCat project id (proj…), required with RC_API_KEY
+  RC_API_URL?: string;                   // override for tests; defaults to https://api.revenuecat.com
 }
 
 // Cloudflare Email Service (April 2026 public beta) outbound message shape.
