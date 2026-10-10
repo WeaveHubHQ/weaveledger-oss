@@ -246,9 +246,11 @@ export async function getProfile(request: Request, env: Env, userId: string): Pr
     ai_fallback_provider: undefined,
     ai_notice: user.ai_fallback_since
       ? {
-          kind: 'primary_out_of_credits',
+          // 'all_out_of_credits': nothing can take a scan, new receipts wait.
+          // 'primary_out_of_credits': a fallback provider is carrying them.
+          kind: user.ai_fallback_provider === 'none' ? 'all_out_of_credits' : 'primary_out_of_credits',
           primary: user.weavehub_ai_enabled ? 'weavehub' : user.ai_provider,
-          fallback: user.ai_fallback_provider,
+          fallback: user.ai_fallback_provider === 'none' ? null : user.ai_fallback_provider,
           since: user.ai_fallback_since,
         }
       : null,
