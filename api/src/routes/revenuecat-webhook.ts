@@ -178,14 +178,15 @@ export async function handleRevenueCatWebhook(request: Request, env: Env): Promi
   let processStatus: Status = 'skipped_unhandled';
 
   // tier: explicit value, or null to leave it alone. expiresAt: null keeps the stored value.
-  const stateStatement = (id: string, tier: 'pro' | 'free' | null, expiresAt: string | null) =>
+  const stateStatement = (id: string, tier: 'pro' | 'free' | null, expiresAt: string | null, clearProduct = false) =>
     env.DB.prepare(
       `UPDATE users SET subscription_tier = COALESCE(?, subscription_tier),
                         subscription_expires_at = COALESCE(?, subscription_expires_at),
+                        rc_product_id = CASE WHEN ? THEN NULL ELSE rc_product_id END,
                         rc_last_event_ms = ?,
                         updated_at = datetime('now')
        WHERE id = ? AND COALESCE(rc_last_event_ms, 0) <= ?`
-    ).bind(tier, expiresAt, eventMs, id, eventMs);
+    ).bind(tier, expiresAt, clearProduct ? 1 : 0, eventMs, id, eventMs);
   const applyState = async (id: string, tier: 'pro' | 'free' | null, expiresAt: string | null): Promise<boolean> =>
     ((await stateStatement(id, tier, expiresAt).run()).meta?.changes ?? 0) > 0;
   const userExists = async (id: string): Promise<boolean> =>
@@ -229,12 +230,15 @@ export async function handleRevenueCatWebhook(request: Request, env: Env): Promi
           carriedExpiry = new Date(t).toISOString();
         }
       }
-      // One batch = one transaction: the old account is never freed without
-      // the new one being granted.
+      // Reconcile both sides atomically, with the event timestamp guarding
+      // entitlement and product metadata together.
       const stmts = [...fromIds.map((id) => stateStatement(id, 'free', null))];
       for (const id of toIds) {
         const grant = grants.get(id);
-        if (grant === 'denied') continue;
+        if (grant === 'denied') {
+          stmts.push(stateStatement(id, 'free', null, true));
+          continue;
+        }
         const expiry = grant ? grant.expiresAt : carriedExpiry;
         if (!expiry) {
           // Pro with no expiry is not Pro to the API. Nothing to stand on:
@@ -242,10 +246,9 @@ export async function handleRevenueCatWebhook(request: Request, env: Env): Promi
           console.warn(`[RC] Transfer to ${id}: no entitlement source (set RC_API_KEY to reconcile transfers)`);
           continue;
         }
-        stmts.push(stateStatement(id, 'pro', expiry));
         // The lookup doesn't give the store product id the superseded-subscription
         // guard compares against, so clear it; the next grant event sets it again.
-        if (grant) stmts.push(env.DB.prepare('UPDATE users SET rc_product_id = NULL WHERE id = ?').bind(id));
+        stmts.push(stateStatement(id, 'pro', expiry, !!grant));
       }
       const results = stmts.length ? await env.DB.batch(stmts) : [];
       const touched = results.filter((r) => (r.meta?.changes ?? 0) > 0).length;
