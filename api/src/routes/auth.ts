@@ -222,7 +222,7 @@ export async function changePassword(request: Request, env: Env, userId: string)
 
 export async function getProfile(request: Request, env: Env, userId: string): Promise<Response> {
   const user = await env.DB.prepare(
-    'SELECT id, email, name, role, mfa_enabled, ai_provider, weavehub_ai_enabled, anthropic_api_key, openai_api_key, weavehub_ai_key, subscription_tier, subscription_expires_at, onboarding_completed, default_book_id, created_at FROM users WHERE id = ?'
+    'SELECT id, email, name, role, mfa_enabled, ai_provider, weavehub_ai_enabled, anthropic_api_key, openai_api_key, weavehub_ai_key, subscription_tier, subscription_expires_at, ai_fallback_since, ai_fallback_provider, onboarding_completed, default_book_id, created_at FROM users WHERE id = ?'
   ).bind(userId).first<Record<string, unknown>>();
 
   if (!user) return error('User not found', 404);
@@ -240,6 +240,18 @@ export async function getProfile(request: Request, env: Env, userId: string): Pr
     openai_api_key: user.openai_api_key ? true : false,
     weavehub_ai_key: user.weavehub_ai_key ? true : false,
     onboarding_completed: !!user.onboarding_completed,
+    // Present only while the primary provider is out of credits and a
+    // fallback is carrying the scans; the clients render the wording.
+    ai_fallback_since: undefined,
+    ai_fallback_provider: undefined,
+    ai_notice: user.ai_fallback_since
+      ? {
+          kind: 'primary_out_of_credits',
+          primary: user.weavehub_ai_enabled ? 'weavehub' : user.ai_provider,
+          fallback: user.ai_fallback_provider,
+          since: user.ai_fallback_since,
+        }
+      : null,
     linked_emails: linkedEmails.results,
   });
 }

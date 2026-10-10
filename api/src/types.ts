@@ -92,12 +92,13 @@ export interface Receipt {
   source: 'camera' | 'email' | 'manual' | 'upload';
   image_key: string | null;
   raw_email: string | null;
-  status: 'pending' | 'processing' | 'completed' | 'failed';
+  status: 'pending' | 'processing' | 'completed' | 'failed' | 'awaiting_credits';
   ai_confidence: number | null;
   tax_deductible: number;
   tax_category: string | null;
   created_at: string;
   updated_at: string;
+  ai_error_detail: string | null;
 }
 
 export interface Category {

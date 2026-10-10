@@ -6,6 +6,7 @@ import { getAiUsage, createAiCheckout, createAiKey } from './routes/ai';
 import { passkeyRegisterOptions, passkeyRegisterVerify, passkeyLoginOptions, passkeyLoginVerify, listPasskeys, renamePasskey, deletePasskey } from './routes/passkeys';
 import { listBooks, createBook, getBook, updateBook, setBookStatus, deleteBook, shareBook, revokeShare, listInvitations, revokeInvitation } from './routes/books';
 import { listReceipts, listAllReceipts, createReceipt, getReceipt, updateReceipt, deleteReceipt, uploadReceiptImage, getReceiptImage, getReceiptAttachment, retryReceipt, retryAllFailedReceipts, getBookSummary, cleanupStuckReceipts } from './routes/receipts';
+import { retryAwaitingCredits } from './services/credit-retry';
 import { exportBook } from './services/export';
 import { listIntegrations, upsertIntegration, deleteIntegration, syncIntegration, syncAllIntegrations, listIncomeTransactions, getIncomeSummary, listPayouts, markPayoutReceived, getIncomeDashboard } from './routes/income';
 import { triggerReconcile, backfillUsd, backfillFees, listCronRuns } from './routes/admin';
@@ -641,11 +642,24 @@ const worker = {
   },
 
   async scheduled(event: ScheduledEvent, env: Env, ctx: ExecutionContext): Promise<void> {
-    // The 10-minute cron only runs the stuck-receipt cleanup so a workflow that
+    // The 10-minute cron runs the stuck-receipt cleanup so a workflow that
     // failed to write its terminal status is visible to users within ~25 minutes
     // (15-min staleness window + cron cadence) instead of waiting for the daily sync.
+    //
+    // Phase H2: same tick also sweeps `awaiting_credits` receipts (H1's
+    // park-and-retry status for credit/quota exhaustion) and requeues a
+    // capped batch through the normal pipeline. See services/credit-retry.ts.
     if (event.cron === '*/10 * * * *') {
-      ctx.waitUntil(cleanupStuckReceipts(env));
+      ctx.waitUntil(
+        cleanupStuckReceipts(env).catch((e) => {
+          console.error('[cron 10min] cleanupStuckReceipts failed:', e instanceof Error ? e.message : 'unknown error');
+        })
+      );
+      ctx.waitUntil(
+        retryAwaitingCredits(env).catch((e) => {
+          console.error('[cron 10min] credit-retry sweep failed:', e instanceof Error ? e.message : 'unknown error');
+        })
+      );
       return;
     }
     // LED-34: monthly reconciliation — settle prior month's pending income

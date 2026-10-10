@@ -2,6 +2,14 @@ import { Env, AiProvider } from '../types';
 import { analyzeReceiptImage, analyzeReceiptPdf, analyzeReceiptEmail, setAnthropicBaseUrl, setAnthropicModel } from '../services/receipt-analyzer';
 import { generateId, decryptValue } from '../utils/crypto';
 import { WorkflowEntrypoint, WorkflowEvent, WorkflowStep } from 'cloudflare:workers';
+import {
+  isCreditExhaustionError,
+  classifyBothProvidersFailed,
+  classifySingleProviderFailed,
+  parseBothProvidersFailed,
+  parseSingleProviderFailed,
+} from './credit-classification';
+import { runWithFallback } from './provider-fallback';
 
 interface ReceiptWorkflowParams {
   receiptId: string;
@@ -11,21 +19,6 @@ interface ReceiptWorkflowParams {
   emailBody?: string;
   emailSubject?: string;
   emailFrom?: string;
-}
-
-// Errors where the primary provider is structurally unavailable (no credits, revoked key,
-// quota exhausted, rate-limited beyond our window). For these we want to fall back to the
-// secondary provider rather than retry the primary. Transient 5xx are intentionally NOT
-// matched — those should retry the primary via the workflow's standard retry path.
-function isBillingOrAuthError(message: string): boolean {
-  if (/credit balance/i.test(message)) return true;
-  if (/insufficient[_ ]quota/i.test(message)) return true;
-  if (/\bbilling\b/i.test(message)) return true;
-  if (/\bquota\b/i.test(message)) return true;
-  if (/API error: 401\b/.test(message)) return true;
-  if (/API error: 403\b/.test(message)) return true;
-  if (/API error: 429\b/.test(message)) return true;
-  return false;
 }
 
 // User keys are encrypted with userId as the per-user salt context (see routes/auth.ts).
@@ -111,11 +104,16 @@ export async function runReceiptPipeline(env: Env, payload: ReceiptWorkflowParam
           ).bind(userId).first<{ ai_provider: AiProvider; weavehub_ai_enabled: number; anthropic_api_key: string | null; openai_api_key: string | null; weavehub_ai_key: string | null }>();
 
           const primary: AiProvider = user?.weavehub_ai_enabled ? 'weavehub' : ((user?.ai_provider || 'anthropic') as AiProvider);
-          // Fallback pairing: weavehub falls back to a BYO anthropic key if
-          // one exists; the BYO providers fall back to each other as before.
-          const secondary: AiProvider = primary === 'anthropic' ? 'openai' : 'anthropic';
+          // Fallback chain: weavehub → anthropic → openai; the BYO providers
+          // fall back to each other. Only providers with a usable key take part.
+          const fallbackOrder: AiProvider[] = primary === 'weavehub' ? ['anthropic', 'openai']
+            : primary === 'anthropic' ? ['openai'] : ['anthropic'];
           const primaryKey = await resolveKey(primary, userId, user, env);
-          const secondaryKey = await resolveKey(secondary, userId, user, env);
+          const fallbacks: { provider: AiProvider; key: string }[] = [];
+          for (const provider of fallbackOrder) {
+            const key = await resolveKey(provider, userId, user, env);
+            if (key) fallbacks.push({ provider, key });
+          }
 
           if (!primaryKey) {
             throw new Error(`No API key configured for ${primary}`);
@@ -165,24 +163,7 @@ export async function runReceiptPipeline(env: Env, payload: ReceiptWorkflowParam
             return analyzeReceiptEmail(input.body, input.subject, input.from, key, prov);
           };
 
-          try {
-            const a = await runOnce(primary, primaryKey);
-            return { analysis: a, providerUsed: primary, fallbackReason: null as string | null };
-          } catch (primaryErr) {
-            const primaryMsg = primaryErr instanceof Error ? primaryErr.message : String(primaryErr);
-            if (!secondaryKey || !isBillingOrAuthError(primaryMsg)) {
-              throw primaryErr;
-            }
-            try {
-              const a = await runOnce(secondary, secondaryKey);
-              return { analysis: a, providerUsed: secondary, fallbackReason: primaryMsg.slice(0, 200) };
-            } catch (secondaryErr) {
-              const secondaryMsg = secondaryErr instanceof Error ? secondaryErr.message : String(secondaryErr);
-              throw new Error(
-                `Both providers failed. Primary (${primary}): ${primaryMsg.slice(0, 200)} | Fallback (${secondary}): ${secondaryMsg.slice(0, 200)}`
-              );
-            }
-          }
+          return runWithFallback({ provider: primary, key: primaryKey }, fallbacks, runOnce);
         }
       );
 
@@ -197,9 +178,48 @@ export async function runReceiptPipeline(env: Env, payload: ReceiptWorkflowParam
       // need workflow durability — and the cleanupStuckReceipts cron is the safety
       // net if the worker dies before this returns.
       const message = err instanceof Error ? err.message : 'Unknown error';
+
+      // Both providers failed for a credit/quota-exhaustion reason: this is
+      // temporary and self-correcting (H2's cron sweep retries it once credits
+      // return), so it must not look like — or be miscounted as — a genuine
+      // failure. notes stays a short human-readable line (it is user-facing);
+      // the raw provider messages go to ai_error_detail for diagnosis only.
+      const bothFailed = parseBothProvidersFailed(message);
+      if (bothFailed && classifyBothProvidersFailed(bothFailed.primaryMsg, bothFailed.secondaryMsg) === 'awaiting_credits') {
+        const detail = `Primary (${bothFailed.primary}): ${bothFailed.primaryMsg} | Fallback (${bothFailed.secondary}): ${bothFailed.secondaryMsg}`;
+        await env.DB.prepare(
+          `UPDATE receipts SET status = 'awaiting_credits',
+             notes = CASE WHEN notes IS NULL OR notes = 'Waiting for AI credits' THEN 'Waiting for AI credits' ELSE notes END,
+             ai_error_detail = ?, updated_at = datetime('now')
+           WHERE id = ?`
+        ).bind(detail.slice(0, 2000), receiptId).run();
+        return { receiptId, status: 'awaiting_credits' };
+      }
+
+      // Sole-provider path (owner directive 2026-08-16, widened rule): only one
+      // provider was ever attempted (no fallback key configured, or the primary error
+      // wasn't billing/auth-shaped). Same 'awaiting_credits' vs 'failed' invariant as
+      // the both-providers branch, just evaluated against the one message we have.
+      const singleFailed = !bothFailed ? parseSingleProviderFailed(message) : null;
+      if (singleFailed && classifySingleProviderFailed(singleFailed.message) === 'awaiting_credits') {
+        const detail = `${singleFailed.provider}: ${singleFailed.message}`;
+        await env.DB.prepare(
+          `UPDATE receipts SET status = 'awaiting_credits',
+             notes = CASE WHEN notes IS NULL OR notes = 'Waiting for AI credits' THEN 'Waiting for AI credits' ELSE notes END,
+             ai_error_detail = ?, updated_at = datetime('now')
+           WHERE id = ?`
+        ).bind(detail.slice(0, 2000), receiptId).run();
+        return { receiptId, status: 'awaiting_credits' };
+      }
+
+      const diagnostic = bothFailed
+        ? `Primary (${bothFailed.primary}): ${bothFailed.primaryMsg} | Fallback (${bothFailed.secondary}): ${bothFailed.secondaryMsg}`
+        : singleFailed
+        ? `${singleFailed.provider}: ${singleFailed.message}`
+        : message;
       await env.DB.prepare(
-        "UPDATE receipts SET status = 'failed', notes = ?, updated_at = datetime('now') WHERE id = ?"
-      ).bind(`Analysis failed: ${message.slice(0, 500)}`, receiptId).run();
+        "UPDATE receipts SET status = 'failed', notes = ?, ai_error_detail = ?, updated_at = datetime('now') WHERE id = ?"
+      ).bind(`Analysis failed: ${diagnostic.slice(0, 500)}`, diagnostic.slice(0, 2000), receiptId).run();
       return { receiptId, status: 'failed' };
     }
 
@@ -232,10 +252,25 @@ export async function runReceiptPipeline(env: Env, payload: ReceiptWorkflowParam
       const duplicateNote = duplicate
         ? `Possible duplicate of receipt ${duplicate.id} (${duplicate.merchant || 'unknown merchant'})`
         : null;
-      const fallbackNote = fallbackReason
-        ? `Processed via ${providerUsed} fallback (primary error: ${fallbackReason})`
-        : null;
-      const combinedNote = [duplicateNote, fallbackNote].filter(Boolean).join('\n') || null;
+      // Which provider handled it is an operational detail, not something for the
+      // user's Notes field (it shows in the receipt and in exports, and writing it
+      // there replaced whatever the user had typed). It goes to the log only.
+      if (fallbackReason) {
+        console.warn(`[Receipt] ${receiptId} processed via ${providerUsed} fallback (primary error: ${fallbackReason})`);
+      }
+      // Drives the "credits used up" notice in Settings: stamped once when the
+      // primary provider is out of credits and a fallback is carrying the scans,
+      // cleared as soon as the primary works again.
+      if (fallbackReason && isCreditExhaustionError(fallbackReason)) {
+        await env.DB.prepare(
+          "UPDATE users SET ai_fallback_since = COALESCE(ai_fallback_since, datetime('now')), ai_fallback_provider = ? WHERE id = ?"
+        ).bind(providerUsed, userId).run();
+      } else if (!fallbackReason) {
+        await env.DB.prepare(
+          'UPDATE users SET ai_fallback_since = NULL, ai_fallback_provider = NULL WHERE id = ? AND ai_fallback_since IS NOT NULL'
+        ).bind(userId).run();
+      }
+      const combinedNote = duplicateNote;
 
       const statements = [
         env.DB.prepare(
@@ -245,8 +280,19 @@ export async function runReceiptPipeline(env: Env, payload: ReceiptWorkflowParam
             tax_amount = ?, tip_amount = ?, ai_confidence = ?,
             receipt_number = ?, invoice_number = ?,
             tax_deductible = ?, tax_category = ?,
-            notes = CASE WHEN ? IS NOT NULL THEN ? ELSE notes END,
-            status = 'completed', updated_at = datetime('now')
+            notes = CASE
+                      WHEN ? IS NOT NULL THEN ?
+                      -- Clear the pipeline's own awaiting_credits sentinel on the way
+                      -- OUT, or a receipt that recovers (H2's sweep, or a manual retry)
+                      -- completes with a real merchant and amount while still reading
+                      -- "Waiting for AI credits" — in the detail view AND in export.ts's
+                      -- CSV Notes column, i.e. the user's accounting record. Matched
+                      -- exactly, NOT blanket-nulled: the CASE exists so a user-authored
+                      -- note survives completion, and that must stay true.
+                      WHEN notes = 'Waiting for AI credits' THEN NULL
+                      ELSE notes
+                    END,
+            status = 'completed', ai_error_detail = NULL, updated_at = datetime('now')
            WHERE id = ?`
         ).bind(
           analysis.merchant, analysis.amount, analysis.currency, analysis.date,
