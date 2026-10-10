@@ -135,6 +135,7 @@ tr{cursor:pointer}
 .status-completed{background:#e8f5ee;color:var(--green)}
 .status-pending,.status-processing{background:#fef3cd;color:#856404}
 .status-failed{background:#fef2f2;color:var(--red)}
+.status-awaiting_credits{background:#eef2fb;color:#3a4d8f}
 .source-badge{display:inline-block;padding:2px 8px;border-radius:10px;font-size:.7rem;font-weight:500;background:rgba(201,168,76,.1);color:var(--gold-dim)}
 
 /* FILTERS BAR */
@@ -368,7 +369,7 @@ tr{cursor:pointer}
     <select class="filter-select" id="receiptBookFilter" style="min-width:160px"></select>
     <input class="filter-input" type="text" id="searchFilter" placeholder="Search merchant...">
     <select class="filter-select" id="categoryFilter"><option value="">All Categories</option></select>
-    <select class="filter-select" id="statusFilter"><option value="">All Statuses</option><option value="completed">Completed</option><option value="pending">Pending</option><option value="processing">Processing</option><option value="failed">Failed</option></select>
+    <select class="filter-select" id="statusFilter"><option value="">All Statuses</option><option value="completed">Completed</option><option value="pending">Pending</option><option value="processing">Processing</option><option value="failed">Failed</option><option value="awaiting_credits">Awaiting Credits</option></select>
     <input class="filter-input" type="date" id="dateFromFilter" title="From date">
     <input class="filter-input" type="date" id="dateToFilter" title="To date">
   </div>
@@ -1766,7 +1767,8 @@ async function showReportPickerModal(receiptIds){
     );
   }catch(e){body.replaceChildren(el('div',{className:'empty'},e.message))}
 }
-function statusBadge(s){return el('span',{className:'status-badge status-'+(s||'pending')},(s||'pending'))}
+var STATUS_LABELS={pending:'Pending',processing:'Processing',completed:'Completed',failed:'Failed',awaiting_credits:'Awaiting Credits'};
+function statusBadge(s){var k=s||'pending';return el('span',{className:'status-badge status-'+k},STATUS_LABELS[k]||k)}
 function sourceBadge(s){return el('span',{className:'source-badge'},(s||'manual'))}
 
 // RECEIPT DETAIL
@@ -1900,6 +1902,20 @@ function renderReceiptDetail(r){
     c.appendChild(el('button',{className:'btn btn-gold',style:{width:'100%',marginTop:'8px'},onclick:async function(){
       try{await api('/api/books/'+r._bookId+'/receipts/'+r.id+'/retry',{method:'POST'});toast('Receipt queued for reprocessing');openReceipt(r._bookId,r.id)}catch(e){toast(e.message,'error')}
     }},'Retry Analysis'));
+  }else if(r.status==='awaiting_credits'){
+    // The primary line must stay cause-neutral: a bare 429 rate-limit lands in
+    // this same status, so asserting "out of credits" would be false for some
+    // receipts. The top-up link is therefore a CONDITIONAL secondary, never the
+    // headline — same reasoning the iOS side used to suppress a "Buy credits"
+    // CTA outright. Do not promote it without revisiting that.
+    var ac=el('div',{className:'empty',style:{marginTop:'8px',padding:'10px 12px',background:'#eef2fb',color:'#3a4d8f',borderRadius:'10px',fontSize:'.82rem',textAlign:'left'}},
+      'Waiting on the AI provider. This receipt will retry automatically — no action needed. Your file is stored, so nothing is lost.');
+    ac.appendChild(el('div',{style:{marginTop:'6px',fontSize:'.78rem',opacity:'.85'}},[
+      'If you are out of AI credits, you can top up at ',
+      el('a',{href:'https://weavehub.app/ai',target:'_blank',rel:'noopener noreferrer',style:{color:'#3a4d8f',textDecoration:'underline'}},'weavehub.app/ai'),
+      '.'
+    ]));
+    c.appendChild(ac);
   }
 }
 function detailSection(title,rows){

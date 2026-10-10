@@ -65,6 +65,25 @@ function base64urlDecode(s: string): string {
 }
 
 // ---------------------------------------------------------------------------
+// WebCrypto typing note
+// ---------------------------------------------------------------------------
+
+/**
+ * TypeScript's DOM-derived `BufferSource` types accept `ArrayBuffer` but
+ * reject `SharedArrayBuffer`, and `Uint8Array#buffer` is typed as the
+ * broader `ArrayBufferLike` (= `ArrayBuffer | SharedArrayBuffer`). Cloudflare
+ * Workers isolates never expose `SharedArrayBuffer` (no shared-memory
+ * threads in the isolate model), so `.buffer` on a Uint8Array in this file
+ * is always a genuine `ArrayBuffer` at runtime. This alias documents that
+ * runtime guarantee in one place; it is applied via `as` type assertions
+ * (erased at compile time, no behavior change) at the `crypto.subtle.*`
+ * call sites below instead of scattering unexplained `as ArrayBuffer`
+ * casts throughout the file. Verification logic and control flow are
+ * unaffected — this narrows a type only.
+ */
+type WorkersArrayBuffer = ArrayBuffer;
+
+// ---------------------------------------------------------------------------
 // DER / ASN.1 helpers
 // ---------------------------------------------------------------------------
 
@@ -366,7 +385,7 @@ export async function verifyAndDecodeJWS(
   const leafSpki = extractSpkiFromCert(leafDer);
   const leafKey = await crypto.subtle.importKey(
     'spki',
-    leafSpki.buffer,
+    leafSpki.buffer as WorkersArrayBuffer,
     { name: 'ECDSA', namedCurve: 'P-256' },
     false,
     ['verify']
@@ -394,8 +413,8 @@ export async function verifyAndDecodeJWS(
   const valid = await crypto.subtle.verify(
     { name: 'ECDSA', hash: 'SHA-256' },
     leafKey,
-    sigForVerify.buffer,
-    signingInput.buffer
+    sigForVerify.buffer as WorkersArrayBuffer,
+    signingInput.buffer as WorkersArrayBuffer
   );
 
   if (!valid) {
@@ -428,7 +447,7 @@ async function verifyCertSignature(
 
   const issuerKey = await crypto.subtle.importKey(
     'spki',
-    issuerSpki.buffer,
+    issuerSpki.buffer as WorkersArrayBuffer,
     { name: 'ECDSA', namedCurve: curve },
     false,
     ['verify']
@@ -445,8 +464,8 @@ async function verifyCertSignature(
   const valid = await crypto.subtle.verify(
     { name: 'ECDSA', hash },
     issuerKey,
-    rawSig.buffer,
-    tbsBytes.buffer
+    rawSig.buffer as WorkersArrayBuffer,
+    tbsBytes.buffer as WorkersArrayBuffer
   );
 
   if (!valid) {
@@ -545,7 +564,7 @@ async function signAppleJWT(
 
   const key = await crypto.subtle.importKey(
     'pkcs8',
-    keyBytes.buffer,
+    keyBytes.buffer as WorkersArrayBuffer,
     { name: 'ECDSA', namedCurve: 'P-256' },
     false,
     ['sign']

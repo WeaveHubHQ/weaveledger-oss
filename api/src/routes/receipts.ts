@@ -197,10 +197,28 @@ export async function updateReceipt(request: Request, env: Env, userId: string, 
     'description', 'payment_method', 'tax_amount', 'tip_amount', 'notes', 'status',
     'tax_deductible', 'tax_category'];
 
-  // Validate enum fields
-  const validStatuses = ['pending', 'processing', 'completed', 'failed'];
+  // Validate enum fields. 'awaiting_credits' (Phase H1) is a terminal-ish state for
+  // receipts where both AI providers were out of credits — it is not user-settable
+  // through normal product flows, but must be accepted here so a PATCH that merely
+  // round-trips an existing receipt (e.g. editing notes on an awaiting_credits row)
+  // does not 400 on its own current status.
+  const validStatuses = ['pending', 'processing', 'completed', 'failed', 'awaiting_credits'];
   if (body.status !== undefined && !validStatuses.includes(body.status as string)) {
-    return error('Invalid status. Must be: pending, processing, completed, or failed.');
+    return error('Invalid status. Must be: pending, processing, completed, failed, or awaiting_credits.');
+  }
+
+  // 'awaiting_credits' is genuinely not user-settable (see comment above): only allow
+  // it through when it is a no-op round-trip of the receipt's own current status.
+  // Anything else — setting it on a receipt that isn't already awaiting_credits, or
+  // trying to PATCH a receipt OUT of it directly — is rejected here.
+  if (body.status === 'awaiting_credits') {
+    const current = await env.DB.prepare(
+      'SELECT status FROM receipts WHERE id = ? AND book_id = ?'
+    ).bind(receiptId, bookId).first<{ status: string }>();
+    if (!current) return error('Receipt not found', 404);
+    if (current.status !== 'awaiting_credits') {
+      return error("Invalid status. 'awaiting_credits' cannot be set directly — it is only produced by the AI pipeline.");
+    }
   }
 
   // Handle moving receipt to a different book
@@ -225,6 +243,14 @@ export async function updateReceipt(request: Request, env: Env, userId: string, 
       updates.push(`${field} = ?`);
       values.push(body[field]);
     }
+  }
+
+  // A PATCH that moves a receipt out of failed/awaiting_credits (e.g. the user
+  // manually completing or resetting it) must not let the raw provider error text
+  // in ai_error_detail survive into later SELECT * reads — see
+  // routes/receipts.ts getReceipt and services/export.ts.
+  if (body.status === 'completed' || body.status === 'pending') {
+    updates.push('ai_error_detail = NULL');
   }
 
   if (updates.length === 0) return error('No fields to update');
@@ -271,8 +297,13 @@ export async function uploadReceiptImage(request: Request, env: Env, userId: str
 
   if (contentType.startsWith('multipart/form-data')) {
     const formData = await request.formData();
-    // Support both 'image' (single) and 'files' (multiple) field names
-    for (const [key, value] of formData.entries()) {
+    // Support both 'image' (single) and 'files' (multiple) field names.
+    // @cloudflare/workers-types types FormData#entries() values as `string`
+    // (a typings gap — values() is correctly typed `File | string`, and the
+    // runtime FormData always yields File objects for file fields). Cast to
+    // the accurate iterator type so `instanceof File` narrows properly; this
+    // is erased at compile time and does not change the emitted call.
+    for (const [key, value] of formData.entries() as IterableIterator<[string, string | File]>) {
       if (!(value instanceof File)) continue;
       if (!ALLOWED_TYPES.includes(value.type)) continue;
       const data = await value.arrayBuffer();
@@ -293,7 +324,7 @@ export async function uploadReceiptImage(request: Request, env: Env, userId: str
   const now = new Date();
   const year = now.getUTCFullYear();
   const month = String(now.getUTCMonth() + 1).padStart(2, '0');
-  const results: { receipt_id: string; status: string }[] = [];
+  const results: { receipt_id: string; image_key: string; status: string }[] = [];
 
   for (const file of files) {
     const receiptId = generateId('rcpt');
@@ -394,7 +425,7 @@ export async function retryAllFailedReceipts(request: Request, env: Env, userId:
   let retried = 0;
   for (const r of rows) {
     await env.DB.prepare(
-      "UPDATE receipts SET status = 'pending', notes = NULL, updated_at = datetime('now') WHERE id = ?"
+      "UPDATE receipts SET status = 'pending', notes = NULL, ai_error_detail = NULL, updated_at = datetime('now') WHERE id = ?"
     ).bind(r.id).run();
     try {
       await startReceiptProcessing(env, r.id + '_retry_' + Date.now(), {
@@ -428,7 +459,7 @@ export async function retryReceipt(request: Request, env: Env, userId: string, b
   if (receipt.status !== 'failed') return error('Only failed receipts can be retried');
 
   await env.DB.prepare(
-    "UPDATE receipts SET status = 'pending', notes = NULL, updated_at = datetime('now') WHERE id = ?"
+    "UPDATE receipts SET status = 'pending', notes = NULL, ai_error_detail = NULL, updated_at = datetime('now') WHERE id = ?"
   ).bind(receiptId).run();
 
   try {
