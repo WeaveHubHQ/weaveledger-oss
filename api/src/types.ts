@@ -18,6 +18,7 @@ export interface Env {
   APPLE_BUNDLE_ID?: string;           // "app.weavehub.WeaveLedger"
   LICENSING_URL?: string;             // "https://licensing.weavehub.app" (for SUBSCRIPTION_ENFORCEMENT=licensing)
   LICENSING_API_KEY?: string;         // Shared secret for authenticating with the licensing worker
+  RC_WEBHOOK_SECRET?: string;         // Shared secret RevenueCat sends in the Authorization header (LED-27)
 }
 
 // Cloudflare Email Service (April 2026 public beta) outbound message shape.

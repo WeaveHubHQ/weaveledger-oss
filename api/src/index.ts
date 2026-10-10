@@ -12,6 +12,7 @@ import { triggerReconcile, backfillUsd, backfillFees, listCronRuns } from './rou
 import { generateId } from './utils/crypto';
 import { listSubscriptions, getSubscriptionSummary, getSubscriptionForecast, syncSubscriptions, addGooglePlaySubscription, handleGooglePlayWebhook } from './routes/subscriptions';
 import { verifyAppSubscription, getAppSubscriptionStatus, restoreAppSubscription, handleAppleNotificationWebhook } from './routes/app-subscription';
+import { handleRevenueCatWebhook } from './routes/revenuecat-webhook';
 import { listBudgets, createBudget, updateBudget, deleteBudget, getBudgetStatus } from './routes/budgets';
 import { listReports, createReport, getReport, updateReport, deleteReport, addReportItems, removeReportItem, exportReport } from './routes/reports';
 import { uploadStatement, listStatements, getStatement, deleteStatement, matchStatementTransaction, unmatchStatementTransaction, ignoreStatementTransaction, createReceiptFromTransaction } from './routes/statements';
@@ -197,6 +198,11 @@ const worker = {
       // Google Play Pub/Sub webhook (public, shared secret auth)
       if (path === '/api/webhooks/google-play' && method === 'POST') {
         return addCors(await handleGooglePlayWebhook(request, env));
+      }
+
+      // RevenueCat webhook (public, shared-secret bearer auth — LED-27)
+      if (path === '/api/webhooks/revenuecat' && method === 'POST') {
+        return addCors(await handleRevenueCatWebhook(request, env));
       }
 
       // Apple App Store Server Notifications webhook (public)

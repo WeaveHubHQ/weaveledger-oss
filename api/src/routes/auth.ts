@@ -357,6 +357,82 @@ async function sendVerificationEmail(env: Env, baseUrl: string, linkedAddress: s
   await sendAppEmail(env, linkedAddress, 'Verify your WeaveLedger sender address', html, text);
 }
 
+// LED-30: Convert a thrown env.SEND_EMAIL exception (or a similar transport
+// failure) into a user-facing message that suggests something to actually try,
+// plus a structured log line so the cause is recoverable from D1/observability
+// without needing live wrangler tail.
+//
+// Known Cloudflare Email Sending error patterns (April 2026 public beta):
+//   - sending_disabled — domain not onboarded to Email Service
+//   - sender_not_allowed / sender_restricted — from-address rejected
+//   - recipient_not_allowed — to-address rejected (blocklist or invalid)
+//   - rate_limit / too many requests — throttled
+//   - signature / dkim / spf — DNS records not propagated yet
+//
+// We surface the *cause class* to the user, not the raw error string — but
+// always echo the raw string in the structured log for triage.
+function describeSendFailure(err: unknown, recipient: string): { userMessage: string; cause: string } {
+  const raw = err instanceof Error ? `${err.name}: ${err.message}` : String(err);
+
+  if (/sending[._-]?disabled/i.test(raw)) {
+    return {
+      cause: 'sending_disabled',
+      userMessage:
+        "WeaveLedger's email delivery isn't enabled yet. This usually clears after a few minutes once domain verification finishes. Try again shortly.",
+    };
+  }
+  if (/sender.*(not.*allowed|restricted|forbidden|invalid)/i.test(raw)) {
+    return {
+      cause: 'sender_rejected',
+      userMessage: 'Our verification sender address was rejected. Please contact support.',
+    };
+  }
+  if (/recipient.*(not.*allowed|invalid|forbidden)|550|554|invalid.*address/i.test(raw)) {
+    return {
+      cause: 'recipient_rejected',
+      userMessage: `Couldn't deliver to ${recipient}. The address may be invalid or blocking our domain.`,
+    };
+  }
+  if (/rate.?limit|too.?many|429/i.test(raw)) {
+    return {
+      cause: 'rate_limited',
+      userMessage: 'Too many verification attempts. Wait a few minutes and try again.',
+    };
+  }
+  if (/dkim|spf|dmarc|dns|propagat/i.test(raw)) {
+    return {
+      cause: 'dns_propagation',
+      userMessage:
+        "Email signing is still propagating. This usually clears within 10 minutes — try again then.",
+    };
+  }
+  if (/timeout|ETIMEDOUT|ECONNRESET|network|fetch.*failed/i.test(raw)) {
+    return {
+      cause: 'transport',
+      userMessage: 'Network hiccup reaching our mail provider. Try again in a moment.',
+    };
+  }
+  return {
+    cause: 'unknown',
+    // Raw provider text stays in the structured log, not in the response.
+    userMessage: "Couldn't send the verification email. Try again in a moment.",
+  };
+}
+
+function logSendFailure(event: string, recipient: string, err: unknown, cause: string): void {
+  const raw = err instanceof Error ? err.message : String(err);
+  const stack = err instanceof Error ? err.stack : undefined;
+  console.error(
+    JSON.stringify({
+      event,
+      recipient,
+      cause,
+      error_message: raw,
+      error_stack: stack ? stack.split('\n').slice(0, 6).join('\n') : undefined,
+    })
+  );
+}
+
 export async function addLinkedEmail(request: Request, env: Env, userId: string): Promise<Response> {
   const body = await request.json<{ email: string }>();
   if (!body.email) return error('Email is required');
@@ -409,8 +485,9 @@ export async function addLinkedEmail(request: Request, env: Env, userId: string)
     // Roll back the pending row — leaving an unsent pending verification
     // would block the user from re-adding the same address.
     await env.DB.prepare('DELETE FROM user_emails WHERE id = ?').bind(id).run();
-    console.error('[Auth] Failed to send verification email:', err);
-    return error('Could not send verification email. Try again in a moment.', 502);
+    const { userMessage, cause } = describeSendFailure(err, email);
+    logSendFailure('verification_email_send_failed', email, err, cause);
+    return error(userMessage, 502);
   }
 
   return success(
@@ -440,8 +517,9 @@ export async function resendLinkedEmailVerification(
   try {
     await sendVerificationEmail(env, new URL(request.url).origin, row.email, token);
   } catch (err) {
-    console.error('[Auth] Failed to re-send verification email:', err);
-    return error('Could not send verification email. Try again in a moment.', 502);
+    const { userMessage, cause } = describeSendFailure(err, row.email);
+    logSendFailure('verification_email_resend_failed', row.email, err, cause);
+    return error(userMessage, 502);
   }
 
   return success(
