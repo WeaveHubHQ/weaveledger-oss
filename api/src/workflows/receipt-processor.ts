@@ -23,6 +23,17 @@ interface ReceiptWorkflowParams {
 
 // User keys are encrypted with userId as the per-user salt context (see routes/auth.ts).
 // decryptValue must be called with the same context or it silently fails.
+// Provider value stored while NO provider can take a scan (as opposed to a
+// fallback provider's name while one is carrying them). Drives the
+// "scans are waiting for credits" form of the Settings notice.
+const NO_PROVIDER = 'none';
+
+async function markAllProvidersOutOfCredits(env: Env, userId: string): Promise<void> {
+  await env.DB.prepare(
+    "UPDATE users SET ai_fallback_since = COALESCE(ai_fallback_since, datetime('now')), ai_fallback_provider = ? WHERE id = ?"
+  ).bind(NO_PROVIDER, userId).run().catch((e) => console.error('[Receipt] could not record credit notice:', e));
+}
+
 async function resolveKey(
   prov: AiProvider,
   userId: string,
@@ -193,6 +204,7 @@ export async function runReceiptPipeline(env: Env, payload: ReceiptWorkflowParam
              ai_error_detail = ?, updated_at = datetime('now')
            WHERE id = ?`
         ).bind(detail.slice(0, 2000), receiptId).run();
+        await markAllProvidersOutOfCredits(env, userId);
         return { receiptId, status: 'awaiting_credits' };
       }
 
@@ -209,6 +221,7 @@ export async function runReceiptPipeline(env: Env, payload: ReceiptWorkflowParam
              ai_error_detail = ?, updated_at = datetime('now')
            WHERE id = ?`
         ).bind(detail.slice(0, 2000), receiptId).run();
+        await markAllProvidersOutOfCredits(env, userId);
         return { receiptId, status: 'awaiting_credits' };
       }
 
