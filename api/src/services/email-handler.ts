@@ -1,6 +1,7 @@
 import { startReceiptProcessing } from '../workflows/receipt-processor';
 import { Env } from '../types';
 import { generateId } from '../utils/crypto';
+import { authenticatedFrom } from './sender-auth';
 
 interface EmailMessage {
   readonly from: string;
@@ -25,11 +26,20 @@ export async function handleInboundEmail(message: EmailMessage, env: Env, waitUn
     return;
   }
 
-  // Note: Cloudflare Email Routing already verifies SPF/DKIM at the routing level
-  // before delivering to the Worker. Our security boundary is the sender email lookup
-  // below — only registered users (or linked emails) can submit receipts.
+  const rawEmail = await streamToString(message.raw);
 
-  const senderEmail = from.toLowerCase();
+  // Neither the envelope sender nor From is authenticated by itself. Trust the
+  // From address only when Cloudflare's own (topmost) Authentication-Results
+  // shows DMARC passed for that domain; then require a registered user below.
+  const senderEmail = authenticatedFrom(rawEmail);
+  if (!senderEmail) {
+    // Diagnostic only: the receiving MTA's verdict, never secret.
+    const ar = rawEmail.match(/^Authentication-Results:.*(?:\r?\n[ \t].*)*/im)?.[0].replace(/\s+/g, ' ').slice(0, 400);
+    console.log(`[Email] Unauthenticated From, top Authentication-Results: ${ar ?? '(none)'}`);
+    await logRejectedSender(env, from, to, subject, 'Sender not registered (no DMARC pass for From)');
+    message.setReject('Sender not registered');
+    return;
+  }
 
   // Verify the sender is a registered user (primary email OR verified linked).
   // Linked-email verification happens out-of-band via a magic link emailed to
@@ -84,9 +94,6 @@ export async function handleInboundEmail(message: EmailMessage, env: Env, waitUn
     ).bind(bookId, user.id, 'Default', 'Auto-created for email receipts').run();
     book = { id: bookId };
   }
-
-  // Read the raw email
-  const rawEmail = await streamToString(message.raw);
 
   // Extract the original HTML body (preserved for viewing the vendor's receipt)
   const emailHtml = extractEmailHtml(rawEmail);
