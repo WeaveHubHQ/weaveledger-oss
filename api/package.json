@@ -5,6 +5,7 @@
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "npx wrangler d1 migrations apply DB --remote && wrangler deploy",
+    "test": "node --test test/*.test.ts",
     "db:migrate": "npx wrangler d1 migrations apply DB --remote",
     "db:migrate:local": "npx wrangler d1 migrations apply DB --local",
     "db:baseline": "npx wrangler d1 execute weaveledger-db --remote --file=./scripts/baseline-migrations.sql"
